@@ -33,8 +33,8 @@ import os
 import argparse
 from torchvision.datasets import ImageFolder
 
-from models.s4 import S4Block as S4  # Can use full version instead of minimal S4D standalone below
-from models.s4d import S4D
+from models.layers.s4 import S4Block as S4  # Can use full version instead of minimal S4D standalone below
+from models.layers.s4d import S4D
 from tqdm.auto import tqdm
 
 # Dropout broke in PyTorch 1.11
