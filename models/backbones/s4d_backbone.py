@@ -4,7 +4,6 @@ import torch.nn as nn
 from models.layers.s4 import S4Block as S4
 from models.layers.s4d import S4D
 
-
 # Dropout broke in PyTorch 1.11
 if tuple(map(int, torch.__version__.split('.')[:2])) == (1, 11):
     print("WARNING: Dropout is bugged in PyTorch 1.11. Results may be worse.")
@@ -15,17 +14,16 @@ else:
     dropout_fn = nn.Dropout2d
 
 
-class Model(nn.Module):
+class S4DBackbone(nn.Module):
 
     def __init__(
         self,
         d_input,
-        d_output=10,
         d_model=256,
         n_layers=4,
         dropout=0.2,
         prenorm=False,
-        lr=0.001
+        lr=0.001,
     ):
         super().__init__()
 
@@ -44,9 +42,6 @@ class Model(nn.Module):
             )
             self.norms.append(nn.LayerNorm(d_model))
             self.dropouts.append(dropout_fn(dropout))
-
-        # Linear decoder
-        self.decoder = nn.Linear(d_model, d_output)
 
     def forward(self, x):
         """
@@ -77,11 +72,5 @@ class Model(nn.Module):
                 x = norm(x.transpose(-1, -2)).transpose(-1, -2)
 
         x = x.transpose(-1, -2)
-
-        # Pooling: average pooling over the sequence length
-        x = x.mean(dim=1)
-
-        # Decode the outputs
-        x = self.decoder(x)  # (B, d_model) -> (B, d_output)
 
         return x
