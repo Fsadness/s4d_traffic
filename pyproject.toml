@@ -12,6 +12,7 @@ dependencies = [
     "packaging>=26.2",
     "pandas>=2.3.3",
     "pykeops>=2.3",
+    "pyyaml>=6.0.3",
     "scipy>=1.15.3",
     "setuptools==75.8.0",
     "tqdm>=4.67.3",

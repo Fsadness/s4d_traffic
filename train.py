@@ -7,8 +7,10 @@ import torchvision
 import torchvision.transforms as transforms
 
 import os
+import yaml
 import argparse
 import importlib
+from datetime import datetime
 from tqdm.auto import tqdm
 from torchvision.datasets import ImageFolder
 
@@ -50,9 +52,69 @@ parser.add_argument('--mode', default='finetune', choices=['pretrain', 'finetune
 parser.add_argument('--resume', '-r', type=str, default=None, help='Resume from checkpoint path')
 # parser.add_argument('--checkpoint_path', default='./checkpoint/ckpt.pth', type=str, help='Checkpoint path')
 parser.add_argument('--pretrained_path', default='', type=str, help='Pretrained model path')
-parser.add_argument('--save_path', default='./checkpoint/ckpt.pth', type=str, help='Path to save checkpoints')
-
+# parser.add_argument('--save_path', default='./checkpoint/ckpt.pth', type=str, help='Path to save checkpoints')
+parser.add_argument('--save_dir', default='./checkpoint', type=str, help='Directory to save checkpoints')
+parser.add_argument('--save_freq', default=10, type=int, help='Save checkpoint every N epochs')
+# Config
+parser.add_argument('--config', '-c', default=None, type=str, help='Config file path')
 args = parser.parse_args()
+
+###############################################################################
+# Save directory setup
+###############################################################################
+
+# save_dir/model/timestamp/
+if args.resume:
+    resume_pth = os.path.abspath(args.resume)
+    resume_dir = os.path.dirname(resume_pth)
+    # save_dir/model/timestamp/checkpoints/xxx.pth
+    if os.path.basename(resume_dir) == "checkpoints":
+        exp_dir = os.path.dirname(resume_dir)
+    else:
+        exp_dir = resume_dir
+    # load config from exp_dir/config.yaml
+    args.config = os.path.join(exp_dir, 'config.yaml')
+else:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    exp_dir = os.path.join(args.save_dir, args.model, timestamp)
+    os.makedirs(exp_dir, exist_ok=True)
+
+
+################################################################################
+# Config Loading
+################################################################################
+
+if args.config is not None:
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+
+    # Override args with config values
+    for key, value in config.items():
+        if hasattr(args, key):
+            # override if args is default, otherwise keep command line args
+            if getattr(args, key) == parser.get_default(key):
+                setattr(args, key, value)
+            # else do not override command line args
+        else:
+            print(f'Warning: Unknown config key "{key}"')
+
+
+###############################################################################
+# Save config and logs in exp_dir
+###############################################################################
+
+config_file = os.path.join(exp_dir, 'config.yaml')
+log_file = os.path.join(exp_dir, 'train.log')
+
+latest_ckpt = os.path.join(exp_dir, 'latest.pth')
+best_ckpt = os.path.join(exp_dir, 'best.pth')
+
+checkpoint_dir = os.path.join(exp_dir, "checkpoints")
+os.makedirs(checkpoint_dir, exist_ok=True)
+
+if not args.resume:
+    with open(config_file, 'w') as f:
+        yaml.safe_dump(vars(args), f, sort_keys=False)
 
 
 ###############################################################################
@@ -125,6 +187,16 @@ model = model.to(device)
 if device == 'cuda':
     cudnn.benchmark = True
 
+###############################################################################
+# Optimizer
+###############################################################################
+
+optimizer, scheduler = setup_optimizer(
+    model=model,
+    lr=args.lr,
+    weight_decay=args.weight_decay,
+    epochs=args.epochs,
+)
 
 ###############################################################################
 # Resume / Pretrained Loading
@@ -135,16 +207,21 @@ if args.mode == 'finetune':
         # resume from specified checkpoint path
         print('==> Resuming from checkpoint..')
         assert os.path.exists(args.resume), 'Checkpoint file not found'
-        checkpoint = torch.load(args.resume)
+        checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['model'])
+        if 'optimizer' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer'])
+        if 'scheduler' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler'])
         best_acc = checkpoint['acc']
-        start_epoch = checkpoint['epoch']
+        start_epoch = checkpoint['epoch'] + 1
+        print(f'==> Resumed from checkpoint: {args.resume} | Epoch: {checkpoint["epoch"]}')
 
     else:
         if os.path.exists(args.pretrained_path):
             # load pretrained weights
             print(f'==> Loading pretrained weights: {args.pretrained_path}')
-            checkpoint = torch.load(args.pretrained_path)
+            checkpoint = torch.load(args.pretrained_path, map_location=device)
             pretrained_dict = checkpoint['model']
             model_dict = model.state_dict()
 
@@ -168,17 +245,6 @@ if args.mode == 'finetune':
             print('==> Training from scratch')
 else: # pretraining mode, always start from scratch
     print('==> Pretraining from scratch')
-
-###############################################################################
-# Optimizer
-###############################################################################
-
-optimizer, scheduler = setup_optimizer(
-    model=model,
-    lr=args.lr,
-    weight_decay=args.weight_decay,
-    epochs=args.epochs,
-)
 
 
 ###############################################################################
@@ -216,7 +282,7 @@ def train():
             # Compute loss only on masked positions
             loss = criterion(outputs[mask], inputs[mask])
             # Alternative: compute loss on all positions
-            loss = criterion(outputs, inputs)
+            # loss = criterion(outputs, inputs)
 
             train_loss += loss.item()
             desc = (
@@ -303,14 +369,13 @@ def eval(epoch, dataloader, checkpoint=False):
 
             state = {
                 'model': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
                 'acc': acc,
                 'epoch': epoch,
             }
 
-            dir = os.path.dirname(args.save_path)
-            if not os.path.exists(dir):
-                os.makedirs(dir)
-            torch.save(state, args.save_path)
+            torch.save(state, best_ckpt)
 
             best_acc = acc
 
@@ -345,11 +410,12 @@ for epoch in pbar:
             'model': model.state_dict(),
             'epoch': epoch,
         }
+        torch.save(state, latest_ckpt)
 
-        dir = os.path.dirname(args.save_path)
-        if not os.path.exists(dir):
-            os.makedirs(dir)
-        torch.save(state, args.save_path)
+        # epoch backup
+        if epoch > 0 and epoch % args.save_freq == 0:
+            backup_ckpt = os.path.join(checkpoint_dir, f"epoch_{epoch:03d}.pth")
+            torch.save(state, backup_ckpt)
 
     ###########################################################################
     # Finetune
@@ -365,6 +431,21 @@ for epoch in pbar:
         val_acc = eval(epoch, valloader, checkpoint=True)
         test_acc = eval(epoch, testloader, checkpoint=False)
         scheduler.step()
+
+        # Save latest checkpoint every epoch
+        state = {
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'acc': val_acc,
+            'epoch': epoch,
+        }
+        torch.save(state, latest_ckpt)
+
+        # epoch backup
+        if epoch > 0 and epoch % args.save_freq == 0:
+            backup_ckpt = os.path.join(checkpoint_dir, f"epoch_{epoch:03d}.pth")
+            torch.save(state, backup_ckpt)
 
         print(
             f'Epoch {epoch} learning rate: {scheduler.get_last_lr()[0]:.6f} | '
