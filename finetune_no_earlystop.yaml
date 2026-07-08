@@ -1,0 +1,29 @@
+# dataset:
+data_dir: /mnt/e/datasets/NetMamba
+dataset: ISCXVPN2016
+img_size: 40
+
+# dataloader:
+batch_size: 64
+num_workers: 4
+
+# model:
+model: s4d_classification
+n_layers: 4
+d_model: 128
+dropout: 0.1
+prenorm: false
+
+# train:
+epochs: 100
+
+# optimizer:
+lr: 0.001
+weight_decay: 0.01
+
+# checkpoint:
+save_dir: ./experiments/finetune
+save_freq: 10
+
+# mode:
+mode: finetune

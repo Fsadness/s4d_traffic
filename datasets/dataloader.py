@@ -1,7 +1,34 @@
 import os
 import torch
+from PIL import Image
 from torchvision.datasets import ImageFolder
 from datasets.transforms import build_transform
+
+
+def _is_valid_image(path):
+    """Check if file exists and is a valid image."""
+    if not os.path.isfile(path):
+        return False
+    try:
+        with Image.open(path) as img:
+            img.verify()
+        return True
+    except Exception:
+        return False
+
+
+class SafeImageFolder(ImageFolder):
+    """ImageFolder that filters out missing/corrupt files to prevent DataLoader crashes."""
+    def __init__(self, root, **kwargs):
+        super().__init__(root, **kwargs)
+        # Filter out samples whose files are missing or corrupt
+        original_count = len(self.samples)
+        valid = [(p, c) for p, c in self.samples if _is_valid_image(p)]
+        if len(valid) < original_count:
+            print(f"[SafeImageFolder] {root}: filtered {original_count - len(valid)} invalid files, {len(valid)} remaining")
+        self.samples = valid
+        self.targets = [c for _, c in valid]
+        self.imgs = self.samples
 
 
 def build_dataloader(args):
@@ -10,7 +37,7 @@ def build_dataloader(args):
     返回trainloader, valloader, testloader和num_classes
     """
     
-    transform = build_transform(args.img_size)
+    transform = build_transform(args)
 
     if args.mode == 'pretrain':
         # 预训练阶段只需要训练集, 不需要验证集和测试集
@@ -35,9 +62,9 @@ def build_dataloader(args):
         val_dir = os.path.join(data_dir, 'valid')
         test_dir = os.path.join(data_dir, 'test')
 
-        trainset = ImageFolder(root=train_dir, transform=transform)
-        valset = ImageFolder(root=val_dir, transform=transform)
-        testset = ImageFolder(root=test_dir, transform=transform)
+        trainset = SafeImageFolder(root=train_dir, transform=transform)
+        valset = SafeImageFolder(root=val_dir, transform=transform)
+        testset = SafeImageFolder(root=test_dir, transform=transform)
 
         trainloader = torch.utils.data.DataLoader(
             trainset,
