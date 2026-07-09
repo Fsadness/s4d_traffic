@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from models.layers.s4 import S4Block as S4
 from models.layers.s4d import S4D
+from models.layers.s4d_layer import S4DLayer
 
 # Dropout broke in PyTorch 1.11
 if tuple(map(int, torch.__version__.split('.')[:2])) == (1, 11):
@@ -24,6 +25,7 @@ class S4DBackbone(nn.Module):
         dropout=0.2,
         prenorm=False,
         lr=0.001,
+        kernel_type='conv',
     ):
         super().__init__()
 
@@ -38,7 +40,8 @@ class S4DBackbone(nn.Module):
         self.dropouts = nn.ModuleList()
         for _ in range(n_layers):
             self.s4_layers.append(
-                S4D(d_model, dropout=dropout, transposed=True, lr=min(0.001, lr))
+                S4DLayer(d_model, dropout=dropout, transposed=True, kernel_type=kernel_type, lr=min(0.001, lr))
+                # S4D(d_model, dropout=dropout, transposed=True, lr=min(0.001, lr))
             )
             self.norms.append(nn.LayerNorm(d_model))
             self.dropouts.append(dropout_fn(dropout))

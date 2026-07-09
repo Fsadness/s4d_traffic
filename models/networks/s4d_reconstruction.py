@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-from models.layers.s4 import S4Block as S4
-from models.layers.s4d import S4D
 from models.backbones.s4d_backbone import S4DBackbone
 
 
@@ -16,7 +14,8 @@ class Model(nn.Module):
         n_layers=4,
         dropout=0.2,
         prenorm=False,
-        lr=0.001
+        lr=0.001,
+        kernel_type='conv'
     ):
         super().__init__()
 
@@ -30,6 +29,7 @@ class Model(nn.Module):
             dropout=dropout,
             prenorm=prenorm,
             lr=lr,
+            kernel_type=kernel_type
         )
 
         # Linear decoder
