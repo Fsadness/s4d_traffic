@@ -11,6 +11,9 @@ checkpoint/
 experiments/
 logs/
 
+# Local caches (e.g. dataset manifests)
+.cache/
+
 # Virtual environments
 .venv
 

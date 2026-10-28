@@ -6,6 +6,11 @@ class PixelTokenizer:
     """
     将输入按像素展平
     """
+    d_input = 1
+
+    def seq_len(self, height, width):
+        return height * width
+
     def __call__(self, x):
         H = x.shape[1]
         return x.view(1, H * H).t()
@@ -16,6 +21,10 @@ class PatchTokenizer:
     """
     def __init__(self, patch_size):
         self.patch_size = patch_size
+        self.d_input = patch_size * patch_size
+
+    def seq_len(self, height, width):
+        return (height // self.patch_size) * (width // self.patch_size)
 
     def __call__(self, x):
         P = self.patch_size
@@ -34,6 +43,10 @@ class CompressedPatchTokenizer:
     def __init__(self, patch_size, compressed_size):
         self.patch_size = patch_size
         self.compressed_size = compressed_size
+        self.d_input = compressed_size * compressed_size
+
+    def seq_len(self, height, width):
+        return (height // self.patch_size) * (width // self.patch_size)
 
     def __call__(self, x):
         P = self.patch_size
@@ -57,6 +70,10 @@ class PacketTokenizer:
     def __init__(self, packet_count=5, packet_size=320):
         self.packet_count = packet_count
         self.packet_size = packet_size
+        self.d_input = packet_count
+
+    def seq_len(self, height=None, width=None):
+        return self.packet_size
 
     def __call__(self, x):
         C, H, W = x.shape
@@ -73,6 +90,18 @@ class LogCompressedPacketTokenizer:
         self.packet_count = packet_count
         self.packet_size = packet_size
         self.segment = segment
+        self.d_input = packet_count
+
+    def seq_len(self, height=None, width=None):
+        """与 __call__ 的压缩规则保持一致，返回压缩后的序列长度。"""
+        total_len = self.packet_size
+        num_segments = math.ceil(total_len / self.segment)
+        length = 0
+        for i in range(num_segments):
+            start = i * self.segment
+            end = min(start + self.segment, total_len)
+            length += max(1, int(round((end - start) / (i + 1))))
+        return length
 
     def compress_segment(self, seg, target_len):
         # seg: (segment_len, packet_count)

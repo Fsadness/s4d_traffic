@@ -17,7 +17,8 @@ from torchvision.datasets import ImageFolder
 
 from models.layers.s4 import S4Block as S4  # Can use full version instead of minimal S4D standalone below
 from models.layers.s4d import S4D
-from datasets.dataloader import build_dataloader
+from datasets.dataloader import build_loaders
+from datasets.specs import infer_d_input
 from optim.optimizer import setup_optimizer
 
 
@@ -33,6 +34,7 @@ parser.add_argument('--img_size', default=40, type=int, help='img_size (40x40)')
 # Dataloader
 parser.add_argument('--batch_size', default=64, type=int, help='Batch size')
 parser.add_argument('--num_workers', default=4, type=int, help='Number of workers to use for dataloader')
+parser.add_argument('--max_samples', default=None, type=int, help='每个 split 最多使用的样本数（快速冒烟/扫描，None 表示全量）')
 # Model
 parser.add_argument('--model', default='s4d_classification', type=str, help='Model name (should match a file in models/networks)')
 parser.add_argument('--n_layers', default=4, type=int, help='Number of layers')
@@ -179,22 +181,15 @@ start_epoch = 0 # start from epoch 0 or last checkpoint epoch
 
 print(f'==> Preparing {args.dataset} data..')
 
-trainloader, valloader, testloader, num_classes = (
-    build_dataloader(args)
-)
+loaders = build_loaders(args, max_samples=args.max_samples)
+trainloader = loaders['train'].loader
+valloader = loaders['valid'].loader if 'valid' in loaders else None
+testloader = loaders['test'].loader if 'test' in loaders else None
+num_classes = loaders['train'].num_classes
 print(f"Data shape: {trainloader.dataset[0][0].shape}")
 
-d_input = 1
-if args.tokenizer == "pixel":
-    d_input = 1
-elif args.tokenizer == "patch":
-    d_input = args.patch_size * args.patch_size
-elif args.tokenizer == "compressed_patch":
-    d_input = args.compressed_size * args.compressed_size
-elif args.tokenizer == "packet" or args.tokenizer == "log_compressed_packet":
-    d_input = 5 # packet_count is fixed to 5 for now
-else:
-    raise ValueError(f"Unsupported tokenizer type: {args.tokenizer}")
+# 输入维度由 InputSpec 统一推导（训练/评估/量化共用一份逻辑）
+d_input = infer_d_input(args)
 
 
 
