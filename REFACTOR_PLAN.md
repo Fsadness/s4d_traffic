@@ -4,7 +4,7 @@
 - 约束：checkpoint 键名与数据目录约定**不能变**（已有 23 个 run 的 `best.pth` 要能直接加载）
 - 结论：主线代码其实只有 ~2.5k 行，仓库里却有 **~36k 行不参与运行**；真正需要合并的是 **3 个训练脚本、2 个评估脚本、3 个网络类、2 个 backbone，以及量化仓里重复的 data/metrics**
 
-**进度**：Phase 0 ✅（`a684de5`）｜Phase 1 ✅（`124419c`、`ecd6419`）｜步骤 1–2 ✅（`9117660`）｜Phase 2 ✅（`b180085`）｜Phase 3 前半 ✅（`9fb2c89`）｜Phase 3 后半 / Phase 4 待做，详见[第九节](#九执行记录与下一步)
+**进度**：Phase 0 ✅（`a684de5`）｜Phase 1 ✅（`124419c`、`ecd6419`）｜步骤 1–2 ✅（`9117660`）｜Phase 2 ✅（`b180085`）｜Phase 3 ✅（`9fb2c89`、`dda2168`）｜Phase 4 待做；`ConfidenceExit` 按约定暂缓，详见[第九节](#九执行记录与下一步)
 
 ---
 
@@ -381,8 +381,9 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 ```
 
 没有按最初方案迁移 `src/`、`extensions/`、`models/layers/s4.py`、`models/layers/s4d.py`——
-因此也没有内联 `DropoutNd`、没有摘除未使用的 `S4Block/S4D` import（它们仍可正常 import），
-启动时那条 pykeops/CUDA 警告依旧存在，属于已知且可接受的状态。
+因此 Phase 0 时也没有内联 `DropoutNd`、没有摘除未使用的 `S4Block/S4D` import。
+不过 Phase 3 合并 backbone 时已经移除了这些未使用 import，**主路径现在不会再触发
+pykeops/CUDA 警告**（只有直接 import 上游 `s4.py` 时才会）。
 
 验收：14 个主线模块 import 通过；仓库根目录只剩 5 个脚本（train/test/train_log/train_log_patch，外加 scripts/train.py）。
 
@@ -452,27 +453,46 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 | stream 模式（同 8 样本子集） | 准确率与 full 一致；`avg_steps=1600/1600`、`early_exit_ratio=0` |
 | 全部护栏测试 | 7 个用例全部通过（kernel / checkpoint / exit policy） |
 
-### Phase 3 后半：模型收敛（待做）
+### Phase 3 后半 ✅：模型合并（已完成，提交 `dda2168`）
 
-- backbone 合并 `forward_step`（现在 `S4DRecurrentBackbone` 与 `S4DBackbone` 有重复）
-- 分类网络合并流式/早退逻辑（把 `s4d_recurrent_classification` 的状态机并回 `s4d_classification`）
-- `ConfidenceExit`（tau / margin / min_steps / patience / stride）+ `scripts/tune_exit.py`
-- 验收：`test_checkpoint_compat` + `test_kernel_parity` + `test_exit_policy` 继续通过
+| 改动 | 内容 |
+| --- | --- |
+| `models/backbones/s4d_backbone.py` | 一个 `S4DBackbone` 同时提供 `forward` / `forward_step` / `reset_state`；删除重复的 `s4d_recurrent_backbone.py` |
+| `models/networks/s4d_classification.py` | 增加 `streaming=True`（含早退策略、`forward_step`、`get_statistics`），吸收原流式状态机；非流式 `forward` 不变 |
+| `models/networks/s4d_recurrent_classification.py` | 变为 20 行别名（`streaming=True` + 循环核），历史模型名继续可用 |
+| `test.py` | `--mode stream` 改用 `s4d_classification(streaming=True)` |
+| `tests/test_exit_policy.py` | 改为测试合并后的类，并校验别名与合并类键名一致 |
+
+验收（CPU）：
+
+| 检查 | 结果 |
+| --- | --- |
+| state_dict 键名 | conv / recurrent / streaming 三者完全一致（2 层探针 22 键；真实 4 层 40 键） |
+| conv vs 整段 recurrent | `max|diff| = 1.19e-07` |
+| 整段 recurrent vs 流式 | `max|diff| = 1.79e-07` |
+| 真实 `best.pth` → streaming | 严格加载通过，前向正常 |
+| full / stream 评估（同一 8 样本子集） | 均 100%，流式 `1600/1600` 步、`0%` 早退 |
+| 训练冒烟（48 样本，seed=42） | 2.0317 / 14.583% / 16.667%，与合并前逐位一致 |
+| 护栏测试 | 8 个用例全部通过 |
+
+> `ConfidenceExit`（tau / margin / min_steps / patience / stride）与 `scripts/tune_exit.py`
+> 按约定**暂缓**：`ExitPolicy` 仍恒返回 False。接口已就位，后续只需新增策略类 + 注册。
 
 ### Phase 4：量化合并 + 四轴接线（2–3 天）
 
 - 合并 `quant/`，改 data/metrics/config 三处调用
-- 加 `policies/`、`scripts/tune_exit.py`、`configs/experiments/*`、`sweep/collect`
+- 扩展 `policies/`（ConfidenceExit）、加 `scripts/tune_exit.py`、`configs/experiments/*`、`sweep/collect`
 - 验收：PTQ/QAT 冒烟通过；一个 3×3 小网格能自动跑完并汇总
 
 ---
 
 ## 六、预期收益
 
-| 指标 | Phase 1 前 | 现在（Phase 3 前半后） | 目标（Phase 4 后） |
+| 指标 | Phase 1 前 | 现在（Phase 3 后） | 目标（Phase 4 后） |
 | --- | ---: | ---: | ---: |
 | 训练实现 | 3 脚本 + 1 未接入 Trainer | **1 Trainer + 3 个 10 行 shim** | 同左 |
 | 评估实现 | 2 脚本 | **1 脚本**（`test.py`，full / stream 两种模式） | 同左 |
+| 模型实现 | 2 backbones + 3 networks | **1 backbone + 2 networks**（+1 个别名） | 同左 |
 | `d_input` 推导 | 3 份 | **1 份**（`InputSpec`） | 1 份 |
 | 数据集构建 | 3 份 | **2 份**（主仓 1 份；quant 待合并） | 1 份 |
 | 指标/画图 | 3 份 | **2 份**（主仓 1 份；quant 待合并） | 1 份 |
@@ -517,6 +537,7 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 | `b180085` | Phase 2：训练循环收敛到 `scripts/train.py` + `engine/trainer.py` | 5 文件，+559 / −1791 |
 | `afad835` | 修复 `scripts/train.py` 直接运行时的 sys.path | 1 文件，+5 |
 | `9fb2c89` | Phase 3 前半：`test.py --mode stream` + `policies/` 占位（删 `test_inference.py`） | 5 文件，+231 / −515 |
+| `dda2168` | Phase 3 后半：合并 backbone 与分类网络（流式并入 `s4d_classification`） | 7 文件，+272 / −320 |
 
 基线：`4bce5b2`（Phase 0 之前），需要整体回滚时用 `git reset --hard 4bce5b2`。
 
@@ -543,16 +564,16 @@ spec = make_input_spec(cfg)          # spec.d_input / spec.seq_len(40, 40) / spe
 2. ✅ `engine/checkpoint.py`：统一 load → eval → `prepare_for_inference` 的顺序；
 3. ✅ Phase 2：训练收敛到 `scripts/train.py` + `engine/trainer.py`，补 `--seed` / `--deterministic` /
    `--kernel_type`，每 run 写 `meta.json`。
-4. ✅ Phase 3 前半：`test.py --mode stream` 吸收 `test_inference.py`；`policies.ExitPolicy`
-   占位（恒不早退），`streaming` 指标已写入 `metrics.json`。
+4. ✅ Phase 3：`test.py --mode stream` 吸收 `test_inference.py`；`policies.ExitPolicy`
+   占位（恒不早退）；backbone 与分类网络合并为单一实现（`dda2168`），流式状态机并入
+   `s4d_classification`，`s4d_recurrent_classification` 变为别名。
 
 **待做（建议顺序）**
 
-5. **Phase 3 后半（模型收敛 + 真正的早退策略）**：
-   - backbone 合并 `forward_step`、分类网络合并流式分支（当前两份实现）；
+5. **ConfidenceExit + 阈值标定（按约定暂缓，可随时启动）**：
    - `policies/confidence.py`：tau / margin / min_steps / patience / stride；
-   - `scripts/tune_exit.py`：在 valid 上扫阈值，输出 `acc vs avg_steps` 曲线。
-   这是你第 2+ 步的核心。
+   - `scripts/tune_exit.py`：在 valid 上扫阈值，输出 `acc vs avg_steps` 曲线；
+   - 由于模型与评估链路已经接好，只需新增策略类并在 `POLICIES` 注册。
 
 6. **Phase 4（量化合并）**：按 `MERGE_GUIDE.md` 并入 `quant/`，只改 data/metrics/config 三处调用；
    合并前不需要动主仓任何前向代码。

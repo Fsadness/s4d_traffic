@@ -43,7 +43,7 @@ uv pip install -r requirements.txt
 
 - `requirements.txt` 由 `uv export --format requirements-txt` 生成，**不包含 torch**，PyTorch 需按上面的命令单独安装。
 - `pykeops` 仅服务于上游 legacy 的 `models/layers/s4.py`（完整版 S4 的 Cauchy / Vandermonde 核），当前 S4D 主路径不依赖它。
-- 启动时若打印 `CUDA extension for structured kernels ... not found`，它来自上游 `models/layers/s4.py` 的可选 CUDA 扩展探测，**不影响** 本仓库的 S4D 训练与评估，无需编译 `extensions/kernels`。
+- `CUDA extension for structured kernels ... not found` 这条警告来自上游 `models/layers/s4.py` 的可选 CUDA 扩展探测；Phase 3 合并后主路径已不再 import 它，训练/评估启动时不会再出现（只有直接使用上游 S4 层时才会触发），也无需编译 `extensions/kernels`。
 
 ---
 
@@ -130,7 +130,7 @@ python test.py <save_dir>/<model>/<timestamp> --kernel recurrent
 python test.py <save_dir>/<model>/<timestamp> --mode stream
 ```
 
-`--mode stream` 使用 `s4d_recurrent_classification` 逐时间步推理，可接入早退策略
+`--mode stream` 使用分类网络的流式分支（`streaming=True` + 循环核）逐时间步推理，可接入早退策略
 （当前 `policies.ExitPolicy` 是占位实现：**永不早退**，因此结果与完整递推一致）。
 除常规指标外，`metrics.json` 会多一个 `streaming` 段：
 
@@ -194,9 +194,9 @@ python train_log_patch.py -c finetune.yaml \
 
 | 模块 | 用途 | 输出 |
 | --- | --- | --- |
-| `s4d_classification` | 主分类模型（卷积核，可切换 `kernel_type='recurrent'`） | `(B, d_output)` logits |
+| `s4d_classification` | 主分类模型：`kernel_type` 可选 conv/recurrent；`streaming=True` 时逐步推理（可接早退策略） | 整段 `(B, d_output)`；流式 `(logits, info)` |
 | `s4d_reconstruction` | 掩码重建预训练 | `(B, L, d_input)` 重建序列 |
-| `s4d_recurrent_classification` | 流式/早退分类实验支线（逐步 `forward_step`、平均池化、可插早停策略） | `(logits, info_dict)` |
+| `s4d_recurrent_classification` | 兼容别名，等价于 `s4d_classification(streaming=True, kernel_type='recurrent')` | 同流式输出 |
 
 默认规模 `d_model=128, n_layers=4`，在 6 类任务上约 20 万参数。
 
@@ -300,8 +300,8 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 `test.py` 只加载测试集（跳过 train/valid，避免重复校验），输出：
 
 ```text
-<exp_dir>/evaluation/            # 或 evaluation_recurrent/
-├── metrics.json                 # 总体 + 逐类指标、延迟、吞吐、平均置信度/margin
+<exp_dir>/evaluation/            # full + conv（或 evaluation_recurrent/、evaluation_stream/）
+├── metrics.json                 # 总体 + 逐类指标、延迟、吞吐、平均置信度/margin（stream 另有 streaming 段）
 ├── classification_report.csv    # 逐类 P/R/F1 + macro/weighted 平均
 └── confusion_matrix.png         # 行归一化混淆矩阵（类别多时自动降低标注密度）
 ```
@@ -331,8 +331,8 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 ├── models/
 │   ├── kernels/             # S4D 参数初始化、离散化、卷积核/循环核
 │   ├── layers/              # S4DLayer；s4.py / s4d.py 为上游参考实现
-│   ├── backbones/           # S4DBackbone / S4DRecurrentBackbone
-│   └── networks/            # 分类、重建、流式分类三个 Model
+│   ├── backbones/           # S4DBackbone（forward / forward_step / reset_state）
+│   └── networks/            # 分类（含流式）、重建两个 Model（+ recurrent 别名）
 ├── optim/optimizer.py       # AdamW + SSM 参数分组 + CosineAnnealing
 ├── policies/
 │   └── base.py              # ExitPolicy（当前为"永不早退"的占位实现）
@@ -360,6 +360,7 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 - **`img_size` 不参与缩放**：序列长度由图片实际尺寸与 tokenizer 决定，`--img_size` 目前仅为兼容保留。
 - **预训练数据缺位**：`pretrain.yaml` 指向 `pretrain_dataset`，需自行准备 `<data_dir>/pretrain_dataset/train/<class>/*.png`。
 - **循环核推理开销**：长序列（如 L=1600）逐步推理明显慢于 FFT 卷积核，仅适合流式/早退场景。
+- **流式模式要求循环核**：`streaming=True` 只接受 `kernel_type='recurrent'`；conv 训练的权重可以直接加载（键名一致），但流式前向会走递推实现。
 - **早退策略仍是占位**：`policies.ExitPolicy` 恒定返回"不停止"，`--mode stream` 目前等同于完整递推；
   阈值 / margin / patience 等参数化策略尚未实现（接口与评估链路已就绪）。
 - **`SafeImageFolder` 启动校验**：首次会做一次 `PIL.Image.verify()`，之后走 `.cache/manifests/` 缓存；数据变动会自动失效。
