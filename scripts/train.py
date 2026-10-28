@@ -23,6 +23,11 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import yaml
 
+# 允许 `python scripts/train.py` 直接运行（否则 sys.path[0] 是 scripts/）
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 from datasets.dataloader import build_loaders
 from datasets.specs import infer_d_input
 from engine.checkpoint import (
