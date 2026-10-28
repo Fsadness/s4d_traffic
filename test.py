@@ -16,7 +16,6 @@ test.py — 实验模型评估脚本
 """
 
 import os
-import sys
 import json
 import time
 import argparse
@@ -27,22 +26,18 @@ import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 from tqdm.auto import tqdm
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    classification_report,
-    confusion_matrix,
-)
 
-# 项目内部模块 — 与 train_log_patch.py 保持一致
-from datasets.dataloader import build_dataloader
+# 项目内部模块 — 数据与指标均与训练 / 量化评估共用
+from datasets.dataloader import build_loaders
+from datasets.specs import infer_d_input
+from engine.metrics import (
+    compute_metrics,
+    normalized_confusion,
+    plot_confusion_matrix,
+    write_classification_report,
+)
 
 
 ###############################################################################
@@ -55,6 +50,7 @@ parser.add_argument("--batch_size", type=int, default=None, help="覆盖 config 
 parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
 parser.add_argument("--device", type=str, default=None, help="cuda / cpu, 默认自动检测")
 parser.add_argument("--kernel", type=str, default="conv", choices=["conv", "recurrent"], help="覆盖 config 中的 kernel_type")
+parser.add_argument("--max_samples", type=int, default=None, help="只评估前 N 个测试样本（快速冒烟，None 表示全量）")
 args = parser.parse_args()
 
 exp_dir = os.path.abspath(args.exp_dir)
@@ -79,7 +75,7 @@ os.makedirs(eval_dir, exist_ok=True)
 with open(config_path, "r") as f:
     config = yaml.safe_load(f)
 
-# 使用 argparse namespace 兼容 build_dataloader / build_transform 的 args 访问方式
+# 使用 argparse namespace 兼容 build_loaders / build_transform 的 args 访问方式
 cfg = argparse.Namespace(**config)
 
 # 覆盖项
@@ -91,54 +87,29 @@ cfg.num_workers = args.num_workers
 cfg.mode = "finetune"
 
 # 兼容旧版 config: 如果没有 tokenizer 字段，则默认使用 pixel
-if not hasattr(cfg, 'tokenizer'):                                                                                                                
+if not hasattr(cfg, 'tokenizer'):
     cfg.tokenizer = "pixel"
 
 device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
 
 ###############################################################################
-# 构建数据集（仅需 testloader）
+# 构建数据集（仅需 testloader，由共用加载器完成）
 ###############################################################################
 
-from datasets.transforms import build_transform
-from datasets.dataloader import SafeImageFolder
-
-def load_test_only(args):
-    """只加载 test 集，跳过 train/val，避免双重 PIL.Image.verify() 遍历。"""
-    transform = build_transform(args)
-    data_dir = os.path.join(args.data_dir, args.dataset, 'dataset_sampled')
-    test_dir = os.path.join(data_dir, 'test')
-    testset = SafeImageFolder(root=test_dir, transform=transform)
-    testloader = torch.utils.data.DataLoader(
-        testset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-    )
-    num_classes = len(testset.classes)
-    class_names = testset.classes
-    return testloader, num_classes, class_names
-
 print(f"==> Loading dataset: {cfg.dataset} ...")
-testloader, num_classes, class_names = load_test_only(cfg)
+test_bundle = build_loaders(cfg, splits=("test",), max_samples=args.max_samples)["test"]
+testloader = test_bundle.loader
+num_classes = test_bundle.num_classes
+class_names = test_bundle.class_names
 print(f"    Classes: {num_classes} | Test samples: {len(testloader.dataset)}")
 
 
 ###############################################################################
-# 计算 d_input（与 train 保持一致）
+# 计算 d_input（与训练共用同一份推导）
 ###############################################################################
 
-if cfg.tokenizer == "pixel":
-    d_input = 1
-elif cfg.tokenizer == "patch":
-    d_input = cfg.patch_size * cfg.patch_size
-elif cfg.tokenizer == "compressed_patch":
-    d_input = cfg.compressed_size * cfg.compressed_size
-elif cfg.tokenizer in ("packet", "log_compressed_packet"):
-    d_input = 5
-else:
-    raise ValueError(f"Unsupported tokenizer: {cfg.tokenizer}")
+d_input = infer_d_input(cfg)
 
 
 ###############################################################################
@@ -229,18 +200,6 @@ latencies = np.array(latencies)
 
 print("==> Computing metrics ...")
 
-# --- 总体指标 ---
-overall_accuracy = accuracy_score(all_targets, all_preds) * 100  # %
-macro_precision = precision_score(all_targets, all_preds, average="macro", zero_division=0) * 100
-macro_recall = recall_score(all_targets, all_preds, average="macro", zero_division=0) * 100
-macro_f1 = f1_score(all_targets, all_preds, average="macro", zero_division=0) * 100
-weighted_precision = precision_score(all_targets, all_preds, average="weighted", zero_division=0) * 100
-weighted_recall = recall_score(all_targets, all_preds, average="weighted", zero_division=0) * 100
-weighted_f1 = f1_score(all_targets, all_preds, average="weighted", zero_division=0) * 100
-
-avg_loss = float(all_losses.mean())
-avg_confidence = float(all_probs.mean())
-
 with torch.profiler.profile(
     activities=[
         torch.profiler.ProfilerActivity.CPU,
@@ -249,7 +208,7 @@ with torch.profiler.profile(
     record_shapes=True,
 ) as prof:
 
-    outputs=model(inputs)
+    outputs = model(inputs)
 
 print(prof.key_averages().table(
     sort_by="self_cuda_time_total",
@@ -271,22 +230,17 @@ with torch.no_grad():
 all_margins = np.array(all_margins)
 avg_margin = float(all_margins.mean())
 
-avg_latency_ms = float(latencies.mean() * 1000)  # ms/sample
-throughput = float(1.0 / latencies.mean())        # samples/sec
-
-# --- 每类别指标 ---
-per_class_precision = precision_score(all_targets, all_preds, average=None, zero_division=0) * 100
-per_class_recall = recall_score(all_targets, all_preds, average=None, zero_division=0) * 100
-per_class_f1 = f1_score(all_targets, all_preds, average=None, zero_division=0) * 100
-support = np.bincount(all_targets, minlength=num_classes)
-
-# --- 混淆矩阵 ---
-cm = confusion_matrix(all_targets, all_preds)
-# 归一化（按行，即每类真实样本数）
-cm_normalized = cm.astype(np.float64)
-row_sums = cm_normalized.sum(axis=1, keepdims=True)
-row_sums[row_sums == 0] = 1  # 避免除零
-cm_normalized = cm_normalized / row_sums
+result = compute_metrics(
+    all_targets,
+    all_preds,
+    all_probs,
+    all_losses,
+    latencies,
+    class_names,
+    avg_margin,
+)
+overall = result["overall"]
+per_class = result["per_class"]
 
 
 ###############################################################################
@@ -299,16 +253,16 @@ print(f"  Dataset    : {cfg.dataset}")
 print(f"  Model      : {cfg.model}")
 print(f"  Device     : {device}")
 print("=" * 60)
-print(f"  Accuracy           : {overall_accuracy:.3f}%")
-print(f"  Macro Precision    : {macro_precision:.3f}%")
-print(f"  Macro Recall       : {macro_recall:.3f}%")
-print(f"  Macro F1           : {macro_f1:.3f}%")
-print(f"  Weighted F1        : {weighted_f1:.3f}%")
-print(f"  Avg Loss (CE)      : {avg_loss:.4f}")
-print(f"  Avg Confidence     : {avg_confidence:.4f}")
-print(f"  Avg Margin         : {avg_margin:.4f}")
-print(f"  Avg Latency        : {avg_latency_ms:.3f} ms/sample")
-print(f"  Throughput         : {throughput:.1f} samples/sec")
+print(f"  Accuracy           : {overall['accuracy']:.3f}%")
+print(f"  Macro Precision    : {overall['macro_precision']:.3f}%")
+print(f"  Macro Recall       : {overall['macro_recall']:.3f}%")
+print(f"  Macro F1           : {overall['macro_f1']:.3f}%")
+print(f"  Weighted F1        : {overall['weighted_f1']:.3f}%")
+print(f"  Avg Loss (CE)      : {overall['avg_loss']:.4f}")
+print(f"  Avg Confidence     : {overall['avg_confidence']:.4f}")
+print(f"  Avg Margin         : {overall['avg_margin']:.4f}")
+print(f"  Avg Latency        : {overall['avg_latency_ms']:.3f} ms/sample")
+print(f"  Throughput         : {overall['throughput_samples_per_sec']:.1f} samples/sec")
 print("=" * 60)
 
 
@@ -325,29 +279,8 @@ metrics = {
     "device": device,
     "test_samples": int(len(all_targets)),
     "num_classes": int(num_classes),
-    "overall": {
-        "accuracy": round(overall_accuracy, 4),
-        "macro_precision": round(macro_precision, 4),
-        "macro_recall": round(macro_recall, 4),
-        "macro_f1": round(macro_f1, 4),
-        "weighted_precision": round(weighted_precision, 4),
-        "weighted_recall": round(weighted_recall, 4),
-        "weighted_f1": round(weighted_f1, 4),
-        "avg_loss": round(avg_loss, 6),
-        "avg_confidence": round(avg_confidence, 6),
-        "avg_margin": round(avg_margin, 6),
-        "avg_latency_ms": round(avg_latency_ms, 4),
-        "throughput_samples_per_sec": round(throughput, 2),
-    },
-    "per_class": {
-        class_names[i]: {
-            "precision": round(float(per_class_precision[i]), 4),
-            "recall": round(float(per_class_recall[i]), 4),
-            "f1": round(float(per_class_f1[i]), 4),
-            "support": int(support[i]),
-        }
-        for i in range(num_classes)
-    },
+    "overall": overall,
+    "per_class": per_class,
 }
 
 metrics_path = os.path.join(eval_dir, "metrics.json")
@@ -360,47 +293,8 @@ print(f"[Saved] {metrics_path}")
 # 保存 classification_report.csv
 ###############################################################################
 
-# 使用 sklearn 的 classification_report 获取完整文本，然后解析为 CSV
-report_dict = classification_report(
-    all_targets, all_preds,
-    target_names=class_names,
-    output_dict=True,
-    zero_division=0,
-)
-
-import csv
-
 csv_path = os.path.join(eval_dir, "classification_report.csv")
-with open(csv_path, "w", newline="", encoding="utf-8") as f:
-    writer = csv.writer(f)
-    writer.writerow(["class", "precision", "recall", "f1-score", "support"])
-    for cls_name in class_names:
-        row = report_dict[cls_name]
-        writer.writerow([
-            cls_name,
-            f"{row['precision']:.4f}",
-            f"{row['recall']:.4f}",
-            f"{row['f1-score']:.4f}",
-            int(row["support"]),
-        ])
-    # macro avg
-    row = report_dict["macro avg"]
-    writer.writerow([
-        "macro avg",
-        f"{row['precision']:.4f}",
-        f"{row['recall']:.4f}",
-        f"{row['f1-score']:.4f}",
-        int(row["support"]),
-    ])
-    # weighted avg
-    row = report_dict["weighted avg"]
-    writer.writerow([
-        "weighted avg",
-        f"{row['precision']:.4f}",
-        f"{row['recall']:.4f}",
-        f"{row['f1-score']:.4f}",
-        int(row["support"]),
-    ])
+write_classification_report(csv_path, all_targets, all_preds, class_names)
 print(f"[Saved] {csv_path}")
 
 
@@ -408,69 +302,7 @@ print(f"[Saved] {csv_path}")
 # 保存 confusion_matrix.png
 ###############################################################################
 
-def plot_confusion_matrix(cm_norm, class_names, save_path, figsize=None, cmap="Blues"):
-    """绘制归一化混淆矩阵并保存。
-
-    针对大类别数做了内存保护：
-    - figsize 上限 24 英寸，避免图像尺寸爆炸（181 类时原代码会产生 81 英寸 ≈ 2.65 亿像素）
-    - DPI 随类别数自适应降低
-    - 超过 40 类时不显示刻度标签，避免重叠
-    - 超过 30 类时不逐格写数值，避免创建数万个 Text 对象
-    """
-    n = len(class_names)
-
-    # 动态调整尺寸 — 上限 24 英寸
-    if figsize is None:
-        base = max(8, min(24, n * 0.45))
-        figsize = (base, base)
-
-    # DPI 随类别数自适应：小矩阵用 200，大矩阵降到 100
-    dpi = 200 if n <= 60 else 100
-
-    fig, ax = plt.subplots(figsize=figsize)
-    im = ax.imshow(cm_norm, interpolation="nearest", cmap=cmap, aspect="auto")
-    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-    # 标签
-    tick_marks = np.arange(n)
-    if n <= 40:
-        ax.set_xticks(tick_marks)
-        ax.set_yticks(tick_marks)
-        ax.set_xticklabels(class_names, rotation=90, fontsize=max(4, 10 - n // 8))
-        ax.set_yticklabels(class_names, fontsize=max(4, 10 - n // 8))
-    else:
-        # 类别太多时只显示部分刻度
-        step = max(1, n // 20)
-        subset_ticks = tick_marks[::step]
-        ax.set_xticks(subset_ticks)
-        ax.set_yticks(subset_ticks)
-        ax.set_xticklabels([class_names[i] for i in subset_ticks], rotation=90, fontsize=6)
-        ax.set_yticklabels([class_names[i] for i in subset_ticks], fontsize=6)
-
-    # 在格子中填数值（超过 30 类时跳过，避免创建数万个 Text 对象导致 OOM）
-    if n <= 30:
-        thresh = cm_norm.max() / 2.0
-        for i in range(n):
-            for j in range(n):
-                val = cm_norm[i, j]
-                if val > 0:
-                    ax.text(
-                        j, i, f"{val:.2f}",
-                        ha="center", va="center",
-                        color="white" if val > thresh else "black",
-                        fontsize=max(3, 8 - n // 6),
-                    )
-
-    ax.set_xlabel("Predicted label", fontsize=12)
-    ax.set_ylabel("True label", fontsize=12)
-    ax.set_title("Normalized Confusion Matrix", fontsize=14)
-
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[Saved] {save_path}")
-
-
+_, cm_normalized = normalized_confusion(all_targets, all_preds, num_classes)
 cm_path = os.path.join(eval_dir, "confusion_matrix.png")
 plot_confusion_matrix(cm_normalized, class_names, cm_path)
 
