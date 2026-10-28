@@ -310,6 +310,31 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 
 ---
 
+## 量化（可选）
+
+量化代码（论文 *Quantizing Small-Scale State-Space Models for Edge AI*）已合并进本仓库，
+入口在 `scripts/quant/`，详细说明见 [docs/quantization.md](docs/quantization.md)。
+
+```bash
+# PTQ：论文异构方案（W4A6，Ā 与状态 8-bit）
+python scripts/quant/ptq_eval.py --ckpt-dir <exp_dir> --preset paper --max-samples 256
+
+# 按序列位置的混合精度：前 800 token 8-bit，其余 4-bit
+python scripts/quant/ptq_eval.py --ckpt-dir <exp_dir> \
+    --quant-config configs/quant/segment_8_4.yaml
+
+# QAT 微调（每个策略都从同一份 FP 权重独立出发）
+python scripts/quant/qat_train.py --ckpt-dir <exp_dir> \
+    --quant-config configs/quant/segment_8_4.yaml --tag seg84 --epochs 2
+```
+
+- 支持两类混合精度：**按参数分组**（Ā/B̄/C/D/状态/激活/权重各自位宽）与
+  **按序列位置分段**（`segment_bits`，例如 `0:800:8,800::4`）；
+- 量化只走递推模式（卷积/FFT 路径未量化）；
+- 产物：PTQ 的 `--out result.json`、QAT 的 `<exp>/quant_qat_<tag>/{quant_best.pth,qat_report.json}`。
+
+---
+
 ## 代码结构
 
 ```text
@@ -336,6 +361,10 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 ├── optim/optimizer.py       # AdamW + SSM 参数分组 + CosineAnnealing
 ├── policies/
 │   └── base.py              # ExitPolicy（当前为"永不早退"的占位实现）
+├── quant/                   # 量化库（伪量化 / 量化核 / 校准 / QAT / 显存估算）
+├── scripts/quant/           # 量化入口：ptq_eval / qat_train / diag_components
+├── configs/quant/           # 量化策略文件（含按序列位置分段）
+├── docs/quantization.md     # 量化实验说明
 ├── engine/
 │   ├── trainer.py           # 唯一训练循环（train/eval/早停/保存）
 │   ├── checkpoint.py        # 加载/保存/恢复 + prepare_for_inference 顺序
@@ -363,6 +392,8 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 - **流式模式要求循环核**：`streaming=True` 只接受 `kernel_type='recurrent'`；conv 训练的权重可以直接加载（键名一致），但流式前向会走递推实现。
 - **早退策略仍是占位**：`policies.ExitPolicy` 恒定返回"不停止"，`--mode stream` 目前等同于完整递推；
   阈值 / margin / patience 等参数化策略尚未实现（接口与评估链路已就绪）。
+- **量化只覆盖递推模式**：`quant/` 的伪量化作用在循环核上，FFT 卷积路径未量化；
+  按序列位置的分段位宽只影响运行时量（状态与激活），权重仍按参数分组设位宽。
 - **`SafeImageFolder` 启动校验**：首次会做一次 `PIL.Image.verify()`，之后走 `.cache/manifests/` 缓存；数据变动会自动失效。
 
 ---

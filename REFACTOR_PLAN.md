@@ -4,7 +4,7 @@
 - 约束：checkpoint 键名与数据目录约定**不能变**（已有 23 个 run 的 `best.pth` 要能直接加载）
 - 结论：主线代码其实只有 ~2.5k 行，仓库里却有 **~36k 行不参与运行**；真正需要合并的是 **3 个训练脚本、2 个评估脚本、3 个网络类、2 个 backbone，以及量化仓里重复的 data/metrics**
 
-**进度**：Phase 0 ✅（`a684de5`）｜Phase 1 ✅（`124419c`、`ecd6419`）｜步骤 1–2 ✅（`9117660`）｜Phase 2 ✅（`b180085`）｜Phase 3 ✅（`9fb2c89`、`dda2168`）｜Phase 4 待做；`ConfidenceExit` 按约定暂缓，详见[第九节](#九执行记录与下一步)
+**进度**：Phase 0 ✅（`a684de5`）｜Phase 1 ✅（`124419c`、`ecd6419`）｜步骤 1–2 ✅（`9117660`）｜Phase 2 ✅（`b180085`）｜Phase 3 ✅（`9fb2c89`、`dda2168`）｜Phase 4 ✅（`581f1c2`）｜`ConfidenceExit` 按约定暂缓，详见[第九节](#九执行记录与下一步)
 
 ---
 
@@ -478,27 +478,48 @@ pykeops/CUDA 警告**（只有直接 import 上游 `s4.py` 时才会）。
 > `ConfidenceExit`（tau / margin / min_steps / patience / stride）与 `scripts/tune_exit.py`
 > 按约定**暂缓**：`ExitPolicy` 仍恒返回 False。接口已就位，后续只需新增策略类 + 注册。
 
-### Phase 4：量化合并 + 四轴接线（2–3 天）
+### Phase 4 ✅：量化合并 + 序列分段混合精度（已完成，提交 `581f1c2`）
 
-- 合并 `quant/`，改 data/metrics/config 三处调用
-- 扩展 `policies/`（ConfidenceExit）、加 `scripts/tune_exit.py`、`configs/experiments/*`、`sweep/collect`
-- 验收：PTQ/QAT 冒烟通过；一个 3×3 小网格能自动跑完并汇总
+| 改动 | 内容 |
+| --- | --- |
+| `quant/` | 从独立仓合并（12 个模块）；`repo.py` 自动定位仓库根；`data.py` 复用 `datasets.dataloader` + `engine/config.py`；`evaluate.py` 复用 `engine.metrics` |
+| `QuantConfig` | 新增 `segment_bits`（按序列位置的位宽）+ `bits_at` / `segments_for_length` / YAML & CLI 解析 |
+| `quant/recurrent.py` | 逐时间步选择状态位宽、按区间量化激活；默认方案不新增模块，state_dict 键名不变 |
+| `quant/memory.py` | 分段时按长度加权平均状态位宽 |
+| `scripts/quant/` | `ptq_eval` / `qat_train` / `diag_components` + 共用 `quant/cli.py`；每个策略从同一份 FP 权重独立 PTQ/QAT |
+| `configs/quant/` | `paper_w4a6` / `uniform8` / `segment_8_4` 三个策略文件 |
+| `docs/quantization.md` | 用法、分段语义、策略流程与限制 |
+
+验收（CPU，8 样本冒烟）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 单元测试（含分段解析/展开/序列化） | 全部通过 |
+| PTQ `paper` 预设 | FP 递推 100% → PTQ 25%（qGELU 未 QAT，符合既有结论） |
+| PTQ `segment_8_4` | 跑通；`describe` 显示 `[0:800](a8/s8),[800:None](a4/s4)`；state/sample 131072B → 24576B（平均 6 bit） |
+| QAT（1 batch，segment） | 16 s 完成，产物 `quant_best.pth` + `qat_report.json` |
+| checkpoint 往返 | 恢复 `param_mode=discrete` 与 `segment_bits`，前向形状正确 |
+
+> 未做（按约定/范围）：`ConfidenceExit` 与 `scripts/tune_exit.py` 仍暂缓；
+> 量化只覆盖递推路径，卷积（FFT）路径未量化；独立仓 `research/s4d_quantization` 可归档。
 
 ---
 
 ## 六、预期收益
 
-| 指标 | Phase 1 前 | 现在（Phase 3 后） | 目标（Phase 4 后） |
+| 指标 | Phase 1 前 | 现在（Phase 4 后） | 目标（后续） |
 | --- | ---: | ---: | ---: |
 | 训练实现 | 3 脚本 + 1 未接入 Trainer | **1 Trainer + 3 个 10 行 shim** | 同左 |
 | 评估实现 | 2 脚本 | **1 脚本**（`test.py`，full / stream 两种模式） | 同左 |
 | 模型实现 | 2 backbones + 3 networks | **1 backbone + 2 networks**（+1 个别名） | 同左 |
 | `d_input` 推导 | 3 份 | **1 份**（`InputSpec`） | 1 份 |
-| 数据集构建 | 3 份 | **2 份**（主仓 1 份；quant 待合并） | 1 份 |
-| 指标/画图 | 3 份 | **2 份**（主仓 1 份；quant 待合并） | 1 份 |
-| 参与运行的行数 | ~2.5k | ~2.3k（训练 -1.5k，新增 engine/scripts/policies） | ~2.2k |
+| 数据集构建 | 3 份 | **1 份**（quant 已复用） | 1 份 |
+| 指标/画图 | 3 份 | **1 份**（quant 已复用） | 1 份 |
+| 量化代码 | 独立仓 2.5k 行 | **并入 `quant/`**，data/metrics/config 复用主仓 | 同左 |
+| 参与运行的行数 | ~2.5k | ~2.3k（训练 -1.5k；新增 engine/scripts/policies/quant） | ~2.2k |
 | 不参与运行的行数 | ~36k | ~34.5k（根目录 1.5k 已归档） | 0 |
 | 新增输入方案 | 改 3 处 + 1 个 tokenizer | **改 1 处 + 1 个 yaml** | 同左 |
+| 新增量化策略 | 改脚本 + 改模型 | **加 1 个 yaml（或 `--segment-bits`）** | 同左 |
 | 新增早退策略 | 改模型类 | **加 1 个 policy 类**（模型已接好接口） | 同左 |
 
 ---
@@ -538,6 +559,7 @@ pykeops/CUDA 警告**（只有直接 import 上游 `s4.py` 时才会）。
 | `afad835` | 修复 `scripts/train.py` 直接运行时的 sys.path | 1 文件，+5 |
 | `9fb2c89` | Phase 3 前半：`test.py --mode stream` + `policies/` 占位（删 `test_inference.py`） | 5 文件，+231 / −515 |
 | `dda2168` | Phase 3 后半：合并 backbone 与分类网络（流式并入 `s4d_classification`） | 7 文件，+272 / −320 |
+| `581f1c2` | Phase 4：合并 `quant/`，新增按序列位置分段位宽与量化入口 | 21 文件，+3307 |
 
 基线：`4bce5b2`（Phase 0 之前），需要整体回滚时用 `git reset --hard 4bce5b2`。
 
@@ -567,20 +589,25 @@ spec = make_input_spec(cfg)          # spec.d_input / spec.seq_len(40, 40) / spe
 4. ✅ Phase 3：`test.py --mode stream` 吸收 `test_inference.py`；`policies.ExitPolicy`
    占位（恒不早退）；backbone 与分类网络合并为单一实现（`dda2168`），流式状态机并入
    `s4d_classification`，`s4d_recurrent_classification` 变为别名。
+5. ✅ Phase 4：`quant/` 合并进主仓，data/metrics/config 三处复用；新增
+   `QuantConfig.segment_bits`（按序列位置的混合精度）与 `configs/quant/*.yaml`；
+   PTQ/QAT/消融三个入口共用 `quant/cli.py`。
 
 **待做（建议顺序）**
 
-5. **ConfidenceExit + 阈值标定（按约定暂缓，可随时启动）**：
+6. **ConfidenceExit + 阈值标定（按约定暂缓，可随时启动）**：
    - `policies/confidence.py`：tau / margin / min_steps / patience / stride；
    - `scripts/tune_exit.py`：在 valid 上扫阈值，输出 `acc vs avg_steps` 曲线；
    - 由于模型与评估链路已经接好，只需新增策略类并在 `POLICIES` 注册。
 
-6. **Phase 4（量化合并）**：按 `MERGE_GUIDE.md` 并入 `quant/`，只改 data/metrics/config 三处调用；
-   合并前不需要动主仓任何前向代码。
-
 7. **簇 1 实验可以立即开始**：输入方案只需在 `datasets/tokenizer.py` 加一个类、
    在 `datasets/specs.py` 注册、再写一个 yaml。建议固定 3 个 seed（`--seed 0/1/2`），
    报告 `mean ± std`，并统一 `--data_dir /home/fsadness/datasets/NetMamba`。
+   量化侧可以直接用 `--segment-bits` 做"输入压缩 + 分段位宽"的联合实验。
+
+8. **（可选）量化后续**：卷积/FFT 路径量化、`scripts/sweep.py` 批量策略扫描、
+   把 `quant_config` 写进 run 级 `meta.json`；独立仓 `research/s4d_quantization`
+   在确认新入口可用后可以归档。
 
 > 提醒：`--seed` 默认 0，`config.yaml` 与 `meta.json` 都会记录；
 > 做"某次实验复现"时直接用 `meta.json.argv` + 同 seed 即可。
