@@ -35,6 +35,17 @@ class Model(nn.Module):
         # Linear decoder
         self.decoder = nn.Linear(d_model, d_output)
 
+    def prepare_for_inference(self):
+        """Prepare the model for inference by caching the discrete parameters of each S4D layer."""
+        self.backbone.prepare_for_inference()
+
+    def train(self, mode=True):
+        super().train(mode)
+        if not mode:
+            self.prepare_for_inference()
+
+        return self
+
     def forward(self, x):
         # (B,L,D)
         x = self.backbone(x)

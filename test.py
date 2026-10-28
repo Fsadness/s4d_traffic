@@ -54,7 +54,7 @@ parser.add_argument("exp_dir", type=str, help="实验文件夹路径 (含 best.p
 parser.add_argument("--batch_size", type=int, default=None, help="覆盖 config 中的 batch_size")
 parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
 parser.add_argument("--device", type=str, default=None, help="cuda / cpu, 默认自动检测")
-parser.add_argument("--kernel", type=str, default=None, choices=["conv", "recurrent"], help="覆盖 config 中的 kernel_type")
+parser.add_argument("--kernel", type=str, default="conv", choices=["conv", "recurrent"], help="覆盖 config 中的 kernel_type")
 args = parser.parse_args()
 
 exp_dir = os.path.abspath(args.exp_dir)
@@ -157,6 +157,7 @@ model = ModelClass(
     dropout=cfg.dropout,
     prenorm=cfg.prenorm,
     lr=cfg.lr,
+    kernel_type=args.kernel,
 )
 print(f"    d_input: {d_input} | d_output: {num_classes}")
 # 加载权重
@@ -239,6 +240,22 @@ weighted_f1 = f1_score(all_targets, all_preds, average="weighted", zero_division
 
 avg_loss = float(all_losses.mean())
 avg_confidence = float(all_probs.mean())
+
+with torch.profiler.profile(
+    activities=[
+        torch.profiler.ProfilerActivity.CPU,
+        torch.profiler.ProfilerActivity.CUDA,
+    ],
+    record_shapes=True,
+) as prof:
+
+    outputs=model(inputs)
+
+print(prof.key_averages().table(
+    sort_by="self_cuda_time_total",
+    row_limit=20
+))
+
 
 # 置信度裕度: top1 概率 - top2 概率（需要重新计算 top2）
 # 为节省显存，这里用逐 batch 重新计算

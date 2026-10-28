@@ -14,3 +14,7 @@ def register_param(module, name, tensor, lr=None):
         if lr is not None: 
             optim["lr"] = lr
         setattr(getattr(module, name), "_optim", optim)
+
+def register_cache(module, name, tensor):
+    """Register a tensor as a buffer (non-trainable)"""
+    module.register_buffer(name, tensor, persistent=False)

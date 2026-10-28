@@ -9,10 +9,12 @@ from einops import rearrange, repeat
 from src.models.nn import DropoutNd
 
 from models.kernels import S4DConvKernel, S4DRecurrentKernel
+from models.kernels.utils import register_param, register_cache
 
 class S4DLayer(nn.Module):
 
-    def __init__(self, d_model, d_state=64, dropout=0.0, transposed=True, kernel_type='conv', **kernel_args):
+    def __init__(self, d_model, d_state=64, dropout=0.0, transposed=True, 
+                 kernel_type='conv', **kernel_args):
         super().__init__()
 
         self.h = d_model
@@ -44,7 +46,19 @@ class S4DLayer(nn.Module):
             nn.Conv1d(self.h, 2*self.h, kernel_size=1),
             nn.GLU(dim=-2),
         )
+    
+    def prepare_for_inference(self):
+        """Prepare the layer for inference by caching the discrete parameters of the kernel."""
+        self.kernel.prepare_for_inference()
 
+        conv = self.output_linear[0]
+        register_cache(self, 'linear_weight', conv.weight.squeeze(-1))
+        register_cache(self, 'linear_bias', conv.bias)
+
+    def reset_state(self, batch_size, device):
+        """Reset the state of the recurrent kernel."""
+        self.kernel.reset_state(batch_size, device)
+    
     def forward_step(self, u_t):
         """ Forward step for recurrent kernel. Input and output shape (B, H) """
         if self.kernel_type != 'recurrent':
@@ -53,17 +67,26 @@ class S4DLayer(nn.Module):
         y_t = self.kernel.forward_step(u_t) # (B, H)
 
         # Compute D term in state space equation - essentially a skip connection
-        y_t = y_t + u_t * self.D # (B, H)
+        # y_t = y_t + u_t * self.D # (B, H)
+        y_t.addcmul_(self.D, u_t) # (B, H)
 
-        y_t = self.dropout(self.activation(y_t))
+        if self.training:
+            y_t = self.dropout(self.activation(y_t))
+        else:
+            y_t = self.activation(y_t)
+        
         # Output linear expects (B, H, L) so we add a dummy length dimension
-        y_t = y_t.unsqueeze(-1) # (B, H, 1)
-        y_t = self.output_linear(y_t).squeeze(-1)
+        # y_t = y_t.unsqueeze(-1) # (B, H, 1)
+        # y_t = self.output_linear(y_t).squeeze(-1)
+        y_t = F.linear(y_t, self.linear_weight, self.linear_bias)
+        y_t = F.glu(y_t, dim=-1)
 
         return y_t
 
     def forward(self, u):
         """Full forward pass. Input and output shape (B, H, L)"""
+        return self.kernel(u, self.D, self.dropout, self.activation, self.output_linear, self.transposed)
+        
         if not self.transposed: u = u.transpose(-1, -2)
         L = u.size(-1)
 

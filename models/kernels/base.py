@@ -12,11 +12,12 @@ class S4DBaseKernel(nn.Module):
     This class is not meant to be used directly, 
     but rather to be subclassed by specific implementations of S4D kernels.
     """
-    def __init__(self, d_model, N=64, dt_min=0.001, dt_max=0.1, lr=None):
+    def __init__(self, d_model, N=64, dt_min=0.001, dt_max=0.1, lr=None, **kwargs):
         super().__init__()
 
         self.H = d_model
         self.N = N
+        self.lr = lr
 
         log_dt, C, log_A_real, A_imag = init_s4d_params(d_model, N, dt_min, dt_max, lr)
 

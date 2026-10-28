@@ -1,3 +1,8 @@
+"""
+S4D Backbone for processing sequences of data. 
+The S4D layers can be configured to use either convolutional or recurrent kernels, 
+"""
+
 import torch
 import torch.nn as nn
 
@@ -46,6 +51,11 @@ class S4DBackbone(nn.Module):
             self.norms.append(nn.LayerNorm(d_model))
             self.dropouts.append(dropout_fn(dropout))
 
+    def prepare_for_inference(self):
+        """Prepare the backbone for inference by caching the discrete parameters of each S4D layer."""
+        for layer in self.s4_layers:
+            layer.prepare_for_inference()
+
     def forward(self, x):
         """
         Input x is shape (B, L, d_input)
@@ -65,7 +75,8 @@ class S4DBackbone(nn.Module):
             z, _ = layer(z)
 
             # Dropout on the output of the S4 block
-            z = dropout(z)
+            if self.training:
+                z = dropout(z)
 
             # Residual connection
             x = z + x
