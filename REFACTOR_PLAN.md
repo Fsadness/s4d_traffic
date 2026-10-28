@@ -4,7 +4,7 @@
 - 约束：checkpoint 键名与数据目录约定**不能变**（已有 23 个 run 的 `best.pth` 要能直接加载）
 - 结论：主线代码其实只有 ~2.5k 行，仓库里却有 **~36k 行不参与运行**；真正需要合并的是 **3 个训练脚本、2 个评估脚本、3 个网络类、2 个 backbone，以及量化仓里重复的 data/metrics**
 
-**进度**：Phase 0 ✅（`a684de5`）｜Phase 1 ✅（`124419c`、`ecd6419`）｜Phase 2–4 待做，详见[第九节](#九phase-01-执行记录与下一步)
+**进度**：Phase 0 ✅（`a684de5`）｜Phase 1 ✅（`124419c`、`ecd6419`）｜步骤 1–2（护栏测试 + checkpoint 封装）✅（`9117660`）｜Phase 2 ✅（`b180085`）｜Phase 3–4 待做，详见[第九节](#九phase-01-执行记录与下一步)
 
 ---
 
@@ -414,13 +414,27 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 
 未做（按约定）：不合并 `quant/`；不迁移 `src/`、`extensions/`、`models/layers/*`；不动 `test_inference.py`、`train_log.py`。
 
-### Phase 2：训练收敛（1–2 天，待做）
+### Phase 2 ✅：训练收敛（已完成，提交 `b180085`）
 
-- `engine/trainer.py` 吸收 `train_log_patch.py`；`engine/checkpoint.py` 统一存取
-- `scripts/train.py` 新入口；根 `train.py` 变 shim
-- 验收：1 epoch 冒烟 + `--resume` 续训 + 旧 `config.yaml` 仍可读
+| 改动 | 内容 |
+| --- | --- |
+| `engine/trainer.py` | 唯一训练循环（train/eval/早停/保存），从 `train_log_patch.py` 逐行迁移，日志格式与 checkpoint 字段保持不变 |
+| `engine/checkpoint.py` | `load_fp_checkpoint`（load → eval → prepare_for_inference）、`build_state`、`save_checkpoint`、`restore_training_state` |
+| `engine/logging.py` | `train.log` logger + `meta.json`（git commit / argv / 数据集规模 / 环境） |
+| `scripts/train.py` | 唯一入口；新增 `--seed`、`--deterministic`、`--kernel_type`、`--max_samples` |
+| 根目录三个脚本 | `train.py` / `train_log.py` / `train_log_patch.py` 变为 10 行薄壳，历史命令继续可用 |
 
-### Phase 3：模型收敛（2–3 天）
+验收（48 样本 × 6 类 × 1 epoch，CPU，seed=42，旧脚本 vs 新入口逐步对比）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `train.log` 的 4 行 epoch 记录 | 完全一致（含 Train/Val/Test Loss 与 Acc） |
+| `best.pth` 权重 | 键名一致（40 个），`max|diff| = 0.000e+00` |
+| checkpoint 字段 | `model/optimizer/scheduler/acc/early_stop_counter/epoch` 齐备 |
+| `--resume` | 正常恢复（Epoch 0 → 从 epoch 1 继续，不再重复训练） |
+| `meta.json` | 写入 seed / git commit / argv / datasets / 设备信息 |
+
+### Phase 3：模型收敛（2–3 天，待做）
 
 - backbone 合并 `forward_step`；classification 合并流式/早退；删 `test_inference.py`
 - 验收：`test_checkpoint_compat`（旧 best.pth 严格加载）+ `test_kernel_parity`（1e-7）
@@ -435,14 +449,14 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 
 ## 六、预期收益
 
-| 指标 | Phase 1 前 | 现在（Phase 1 后） | 目标（Phase 4 后） |
+| 指标 | Phase 1 前 | 现在（Phase 2 后） | 目标（Phase 4 后） |
 | --- | ---: | ---: | ---: |
-| 训练实现 | 3 脚本 + 1 未接入 Trainer | 3 脚本（数据层已共用） | 1 Trainer + 2 shim |
+| 训练实现 | 3 脚本 + 1 未接入 Trainer | **1 Trainer + 3 个 10 行 shim** | 同左 |
 | 评估实现 | 2 脚本 | 2 脚本（`test.py` 已瘦身） | 1 Evaluator + 1 shim |
 | `d_input` 推导 | 3 份 | **1 份**（`InputSpec`） | 1 份 |
 | 数据集构建 | 3 份 | **2 份**（主仓 1 份；quant 待合并） | 1 份 |
 | 指标/画图 | 3 份 | **2 份**（主仓 1 份；quant 待合并） | 1 份 |
-| 参与运行的行数 | ~2.5k | ~2.6k（新增 specs/manifest/metrics） | ~2.4k |
+| 参与运行的行数 | ~2.5k | ~2.3k（训练 -1.5k，新增 engine/scripts） | ~2.2k |
 | 不参与运行的行数 | ~36k | ~34.5k（根目录 1.5k 已归档） | 0 |
 | 新增输入方案 | 改 3 处 + 1 个 tokenizer | **改 1 处 + 1 个 yaml** | 同左 |
 | 新增早退策略 | 改模型类 | 改模型类 | 加 1 个 policy + 1 个 yaml |
@@ -467,7 +481,7 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 
 ---
 
-## 九、Phase 0–1 执行记录与下一步
+## 九、执行记录与下一步
 
 ### 9.1 提交记录（仅本地 commit，未 push）
 
@@ -478,6 +492,9 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 | `ecd6419` | 评估层：抽出 `engine/metrics.py` | 2 文件，+234 / −213 |
 | `5c04eb6` | 文档：README 与新目录/新参数；本方案记录 Phase 0–1 | 2 文件，+545 / −7 |
 | `2782969` | 修正 `--max_samples` 的帮助文案（随机子集，非前 N 个） | 2 文件，+3 / −3 |
+| `3bc2fdc` | 记录 `/home` 与 `/mnt/e` 数据根目录不一致 | 1 文件，+19 |
+| `9117660` | 护栏：`engine/checkpoint.py` + 两个测试 | 4 文件，+375 |
+| `b180085` | Phase 2：训练循环收敛到 `scripts/train.py` + `engine/trainer.py` | 5 文件，+559 / −1791 |
 
 基线：`4bce5b2`（Phase 0 之前），需要整体回滚时用 `git reset --hard 4bce5b2`。
 
@@ -497,56 +514,61 @@ spec = make_input_spec(cfg)          # spec.d_input / spec.seq_len(40, 40) / spe
 
 ### 9.3 下一步建议（按收益/风险排序）
 
-1. **先把当前状态提交为实验基线**（已完成，HEAD=`ecd6419`）。
-   现在可以开始你的簇 1（输入结构 / 压缩方案）实验，因为加方案只需写一个 tokenizer + 一个 yaml。
+**已完成（本轮）**
 
-2. **补两个"护栏"测试（半天，强烈建议）**，它们直接保护你计划里的第 2、3 步：
-   - `tests/test_kernel_parity.py`：同一权重下 conv 与 recurrent 输出 `allclose(atol=1e-5)`，
-     并断言两者 `state_dict` 键名一致。这是"conv 训练、递推推理/量化"迁移路线的前提。
-   - `tests/test_checkpoint_compat.py`：用任意一个历史 `best.pth` 严格加载新模型。
-   现在这套结构下写测试成本很低，等 Phase 3 改模型时再补就来不及发现回归。
+1. ✅ 护栏测试：`tests/test_kernel_parity.py`（键名 + 数值 + 缓存坑）、
+   `tests/test_checkpoint_compat.py`（历史 `best.pth` 严格加载）；
+2. ✅ `engine/checkpoint.py`：统一 load → eval → `prepare_for_inference` 的顺序；
+3. ✅ Phase 2：训练收敛到 `scripts/train.py` + `engine/trainer.py`，补 `--seed` / `--deterministic` /
+   `--kernel_type`，每 run 写 `meta.json`。
 
-3. **抽 `engine/checkpoint.py`（半天，可与 2 合并）**：
-   ```python
-   def load_fp_checkpoint(model, path, device="cpu", strict=True):
-       model.load_state_dict(torch.load(path, map_location=device)["model"], strict=strict)
-       model.eval()
-       if hasattr(model, "prepare_for_inference"):
-           model.prepare_for_inference()     # 必须在 load 之后重建离散参数缓存
-       return model
-   ```
-   已经实测过：不刷新缓存时 conv→recurrent 的 logits 差 0.18，刷新后 1.19e-7。
-   你的第 2 步与量化迁移都会用到它，先封好能省掉一类难查的 bug。
+**待做（建议顺序）**
 
-4. **Phase 2（训练收敛）**：`train_log_patch.py` → `engine/trainer.py`，加 `--kernel-type`、
-   `--seed`、每 run 写 `meta.json`（git commit / argv / resolved config）。
-   `--seed` 是后面扫阈值与量化的前提——现在训练完全没有设种子。
+4. **Phase 3 前半（评估统一 + 早退）**：
+   - `test.py` 增加 `--mode stream`，吸收 `test_inference.py`；
+   - 新建 `policies/`（`ExitPolicy` 协议 + `ConfidenceExit`：tau / margin / min_steps / patience / stride）；
+   - `scripts/tune_exit.py`：在 valid 上扫阈值，输出 `acc vs avg_steps` 曲线。
+   这是你第 2 / 2+ 步的入口。
 
-5. **Phase 3 前半（评估统一）**：`test.py` 加 `--mode stream`，吸收 `test_inference.py`；
-   同时把早退策略抽到 `policies/`（当前 `early_stop_strategy` 只是桩，传字符串会崩）。
-   这是你第 2+ 步的入口。
-
-6. **Phase 4（量化合并）**：按 `MERGE_GUIDE.md` 并入 `quant/`，只改 data/metrics/config 三处调用。
+5. **Phase 4（量化合并）**：按 `MERGE_GUIDE.md` 并入 `quant/`，只改 data/metrics/config 三处调用；
    合并前不需要动主仓任何前向代码。
 
-> 建议顺序：**2 → 3 → 4（簇 1 实验并行跑）→ 5 → 6**。
-> 其中 2、3 是纯新增文件，不改变现有行为，可以立刻做；4 之后你的训练才是可复现的。
+6. **簇 1 实验可以立即开始**：输入方案只需在 `datasets/tokenizer.py` 加一个类、
+   在 `datasets/specs.py` 注册、再写一个 yaml。建议固定 3 个 seed（`--seed 0/1/2`），
+   报告 `mean ± std`，并统一 `--data_dir /home/fsadness/datasets/NetMamba`。
 
-### 9.4 一个必须先确认的环境事实（数据根目录）
+> 提醒：`--seed` 默认 0，`config.yaml` 与 `meta.json` 都会记录；
+> 做"某次实验复现"时直接用 `meta.json.argv` + 同 seed 即可。
 
-刚才复核时发现两份 `NetMamba` 并不等价：
+### 9.4 数据根目录与旧实验 config 迁移（已处理）
+
+两份 `NetMamba` 并不等价：
 
 | 根目录 | 内容 |
 | --- | --- |
 | `/home/fsadness/datasets/NetMamba` | 有 `dataset_sampled/{train,valid,test}`（当前可直接训练） |
 | `/mnt/e/datasets/NetMamba` | 只有 `images_sampled_new`（未划分），**没有 `dataset_sampled`** |
 
-影响：
+影响：6 月的 run（`config.yaml` 里写 `/mnt/e/...`）无法直接 resume/evaluate；并且旧 `metrics.json`
+的类别分布（如 Audio=222）与当前数据（Audio=252）不同，说明数据期间被重新划分过，
+**跨版本精度数字不可直接比较**。
 
-- 6 月的 run（`config.yaml` 里写 `data_dir: /mnt/e/datasets/NetMamba`）**无法直接 resume/evaluate**，
-  因为那份数据现在缺 `dataset_sampled`；
-- 旧 `metrics.json` 的类别分布（如 Audio=222）与当前数据（Audio=252）不同，说明这期间数据被重新划分过，
-  **跨版本的精度数字不可直接比较**。
+已执行迁移（按你的要求）：
 
-建议：所有新实验统一 `--data_dir /home/fsadness/datasets/NetMamba`，并在 `configs/base.yaml`（Phase 2 引入）
-里固定下来，不要依赖 CLI 默认值。
+- 对 `experiments/**/config.yaml` 做行级替换：`/mnt/e/datasets/NetMamba` → `/home/fsadness/datasets/NetMamba`；
+- 共 **20 个 config** 被更新（另有 3 个新 run 本来就是 `/home`），其余字段/顺序/注释不变；
+- 迁移前备份：`/tmp/s4d_config_backup_20261028_202337.tar.gz`（23 个 config，含相对路径）；
+- 复查：所有 config 中已无 `/mnt/e` 残留。
+
+迁移后的可用性验证（新代码 + 旧 checkpoint）：
+
+| 旧 run | 配置 | 结果 |
+| --- | --- | --- |
+| `finetune/.../20260603_100845` | Android / patch / 181 类 | 严格加载 + 前向通过，`test.py` 正常产出 metrics/CSV/PNG |
+| `finetune/.../20260602_005702` | Android / 旧 config（无 tokenizer 字段） | 按 pixel 推导 `d_input`，加载与评估通过 |
+
+> 结论：旧实验结果现在可以在新代码中直接 `python test.py <exp_dir>` 复测；
+> 但**历史 metrics 与当前数据的数值不可直接对比**，只用于验证"能跑通 + 权重可加载"。
+
+建议：所有新实验统一 `--data_dir /home/fsadness/datasets/NetMamba`；
+Phase 3 引入 `configs/base.yaml` 后把它固定下来，不再依赖 CLI 默认值。

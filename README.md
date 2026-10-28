@@ -62,6 +62,7 @@ uv pip install -r requirements.txt
 ```
 
 - `--data_dir` 是数据集根目录，脚本默认值 `/mnt/e/datasets/NetMamba`，请按实际位置覆盖。
+  当前机器上可直接使用的是 `/home/fsadness/datasets/NetMamba`（`/mnt/e` 那份只有 `images_sampled_new`，没有划分好的 `dataset_sampled`）。
 - 图像在 `datasets/transforms.py` 中被强制转为单通道灰度、归一化到 `[-1, 1]`；尺寸由图片本身决定（`--img_size` 是保留参数，当前流程不参与缩放）。
 - 除 `pixel` 之外的 tokenizer 依赖 40×40 输入，见下一节。
 - 预训练模式（`--mode pretrain`）只读取 `<data_dir>/<dataset>/train`，不使用 `dataset_sampled`。
@@ -210,13 +211,25 @@ python train_log_patch.py -c finetune.yaml \
 
 ### 训练脚本
 
+训练逻辑只有一份实现：`scripts/train.py` + `engine/trainer.py`。根目录三个历史文件名都是它的薄壳：
+
 | 脚本 | 说明 |
 | --- | --- |
-| `train_log_patch.py` | **当前主入口**：配置加载、结构化日志、tokenizer、早停、最佳/最新 checkpoint |
-| `train_log.py` | 上一代脚本：有日志与早停，但没有 tokenizer 选项（固定 pixel） |
-| `train.py` | 最早版本：无 `train.log`、无早停 |
+| `scripts/train.py` | **唯一实现**：参数解析、配置覆盖、日志、`meta.json`、调用 Trainer |
+| `train_log_patch.py` | 当前常用入口（薄壳），参数与 `scripts/train.py` 完全一致 |
+| `train_log.py` | 旧入口（薄壳），原只支持 pixel，现在可选任意 tokenizer |
+| `train.py` | 最早入口（薄壳），现在同样会写 `train.log` 并支持早停 |
 
-三者共享同一套 `datasets/`、`models/`、`optim/` 代码；新实验请使用 `train_log_patch.py`。
+### 复现性
+
+| 参数 | 作用 |
+| --- | --- |
+| `--seed`（默认 0） | 固定初始化 / shuffle / dropout 的随机流；同一 seed + 同一环境可复现 |
+| `--deterministic` | 关闭 cudnn benchmark、开启确定性算法（更慢，但尽量逐位复现） |
+| `--kernel_type conv\|recurrent` | 训练时选择核；推理时可用 `test.py --kernel` 换成另一种 |
+
+每次运行都会写 `meta.json`（git commit、`argv`、数据集规模、设备与版本），配合 `config.yaml` 可以完整还原一次实验。
+注意：单 seed 只适合复现；比较不同输入方案时建议 3 个 seed 报 `mean ± std`。
 
 ### 配置优先级
 
@@ -242,6 +255,7 @@ python train_log_patch.py -c finetune.yaml --dataset CICIoT2022 --tokenizer patc
 ```text
 <save_dir>/<model>/<YYYYmmdd_HHMMSS>/
 ├── config.yaml            # 本次运行的完整参数快照
+├── meta.json              # git commit / argv / 数据集规模 / 环境版本
 ├── train.log              # 结构化训练日志（时间戳 | 指标）
 ├── best.pth               # 验证集最优（预训练为训练损失最优）
 ├── latest.pth             # 每个 epoch 覆盖
@@ -249,7 +263,7 @@ python train_log_patch.py -c finetune.yaml --dataset CICIoT2022 --tokenizer patc
     └── epoch_XXX.pth      # 每 --save_freq 个 epoch 的备份
 ```
 
-checkpoint 字典字段：`model`、`optimizer`、`scheduler`、`acc`、`epoch`，`train_log_patch.py` 额外保存 `early_stop_counter`；预训练阶段的 checkpoint 只保存 `model` 与 `epoch`。
+checkpoint 字典字段：`model`、`optimizer`、`scheduler`、`acc`、`epoch`，并额外保存 `early_stop_counter`；预训练阶段的 checkpoint 只保存 `model` 与 `epoch`。
 
 ### 早停
 
@@ -284,9 +298,10 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 
 ```text
 .
-├── train_log_patch.py       # 训练主入口
-├── train_log.py             # 训练入口（旧）
-├── train.py                 # 训练入口（最早）
+├── scripts/train.py         # 训练唯一实现（根目录三个 train*.py 是它的薄壳）
+├── train_log_patch.py       # 训练入口（薄壳）
+├── train_log.py             # 训练入口（薄壳）
+├── train.py                 # 训练入口（薄壳）
 ├── test.py                  # 评估入口
 ├── finetune.yaml            # 微调配置（ISCXVPN2016，含早停）
 ├── finetune_no_earlystop.yaml  # 微调配置（关闭早停）
@@ -304,8 +319,11 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 │   └── networks/            # 分类、重建、流式分类三个 Model
 ├── optim/optimizer.py       # AdamW + SSM 参数分组 + CosineAnnealing
 ├── engine/
-│   ├── trainer.py           # 面向对象的 Trainer 封装（结构相近，未被入口使用）
+│   ├── trainer.py           # 唯一训练循环（train/eval/早停/保存）
+│   ├── checkpoint.py        # 加载/保存/恢复 + prepare_for_inference 顺序
+│   ├── logging.py           # train.log + meta.json
 │   └── metrics.py           # 指标、分类报告、混淆矩阵（评估入口共用）
+├── tests/                   # 护栏测试（kernel parity / checkpoint 兼容）
 ├── src/                     # 上游 state-spaces/s4 代码快照（运行时只用 src.models.nn）
 ├── extensions/kernels/      # 上游可选 CUDA 扩展（当前 S4D 路径不需要）
 ├── archive/                 # 已归档的上游 demo / train_full / 旧 README
@@ -315,18 +333,16 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 
 > `.cache/manifests/` 存放数据集样本校验缓存（已被 `.gitignore` 忽略）：数据没变时直接复用，删除或修改文件会自动失效。
 
-> `engine/trainer.py` 是训练循环的另一种面向对象封装，结构与主脚本相近但未被任何入口调用，且预训练损失的计算方式与主脚本不同；实际使用请以 `train_log_patch.py` 为准。
-
 ---
 
 ## 已知限制
 
 - **单卡、小显存**：本仓库在 4 GB 显卡上验证；显存不足时优先降 `--batch_size` 或 `--d_model`。
-- **训练只走卷积核**：`train_log_patch.py` 未暴露 `kernel_type`，训练固定使用 `S4DConvKernel`；循环核用于 `test.py --kernel recurrent` 与流式推理模型。
+- **循环核训练很慢**：`--kernel_type recurrent` 已可用，但它是逐步 Python 循环（L=1600 时训练代价远高于 FFT 卷积核）；常规训练仍建议 conv，循环核主要用于推理/量化实验。
 - **`img_size` 不参与缩放**：序列长度由图片实际尺寸与 tokenizer 决定，`--img_size` 目前仅为兼容保留。
 - **预训练数据缺位**：`pretrain.yaml` 指向 `pretrain_dataset`，需自行准备 `<data_dir>/pretrain_dataset/train/<class>/*.png`。
-- **循环核为逐时间步 Python 循环**：长序列（如 L=1600）推理明显慢于 FFT 卷积核，仅适合流式/早退场景。
-- **`SafeImageFolder` 启动校验**：样本越多启动越慢；数据确认无损时可自行绕过。
+- **循环核推理开销**：长序列（如 L=1600）逐步推理明显慢于 FFT 卷积核，仅适合流式/早退场景。
+- **`SafeImageFolder` 启动校验**：首次会做一次 `PIL.Image.verify()`，之后走 `.cache/manifests/` 缓存；数据变动会自动失效。
 
 ---
 
