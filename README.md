@@ -101,7 +101,7 @@ python train_log_patch.py -c finetune.yaml \
 `-c finetune.yaml` 读取配置，命令行参数优先级更高（见 [配置优先级](#配置优先级)）。产物写入
 `<save_dir>/<model>/<YYYYmmdd_HHMMSS>/`。
 
-加 `--max_samples N` 可只取每个 split 的前 N 个样本，用于几秒钟跑完的冒烟测试（例如 `--max_samples 96 --epochs 1`）。
+加 `--max_samples N` 可让每个 split 随机抽样至多 N 个样本（固定 seed），用于几秒钟跑完的冒烟测试（例如 `--max_samples 96 --epochs 1`）。
 
 ### 2. 断点续训
 
@@ -123,7 +123,7 @@ python test.py <save_dir>/<model>/<timestamp>
 python test.py <save_dir>/<model>/<timestamp> --kernel recurrent
 ```
 
-同样支持 `--max_samples N`（只评估前 N 个测试样本）与 `--device cpu`。
+同样支持 `--max_samples N`（随机抽样至多 N 个测试样本，固定 seed）与 `--device cpu`。
 
 ### 4. 预训练（掩码重建）
 

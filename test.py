@@ -50,7 +50,7 @@ parser.add_argument("--batch_size", type=int, default=None, help="覆盖 config 
 parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
 parser.add_argument("--device", type=str, default=None, help="cuda / cpu, 默认自动检测")
 parser.add_argument("--kernel", type=str, default="conv", choices=["conv", "recurrent"], help="覆盖 config 中的 kernel_type")
-parser.add_argument("--max_samples", type=int, default=None, help="只评估前 N 个测试样本（快速冒烟，None 表示全量）")
+parser.add_argument("--max_samples", type=int, default=None, help="每个 split 随机抽样至多 N 个样本（固定 seed=0，便于复现；None 表示全量）")
 args = parser.parse_args()
 
 exp_dir = os.path.abspath(args.exp_dir)
