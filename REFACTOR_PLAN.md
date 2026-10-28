@@ -469,13 +469,15 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 
 ## 九、Phase 0–1 执行记录与下一步
 
-### 9.1 提交记录（未 push）
+### 9.1 提交记录（仅本地 commit，未 push）
 
 | 提交 | 内容 | 变更 |
 | --- | --- | --- |
 | `a684de5` | 归档根目录未使用的上游代码 | 6 个文件 → `archive/`，+`archive/README.md` |
 | `124419c` | 数据层：`InputSpec` / 清单缓存 / 统一加载器 | 7 文件，+392 / −92 |
 | `ecd6419` | 评估层：抽出 `engine/metrics.py` | 2 文件，+234 / −213 |
+| `5c04eb6` | 文档：README 与新目录/新参数；本方案记录 Phase 0–1 | 2 文件，+545 / −7 |
+| `2782969` | 修正 `--max_samples` 的帮助文案（随机子集，非前 N 个） | 2 文件，+3 / −3 |
 
 基线：`4bce5b2`（Phase 0 之前），需要整体回滚时用 `git reset --hard 4bce5b2`。
 
