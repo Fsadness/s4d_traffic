@@ -531,3 +531,22 @@ spec = make_input_spec(cfg)          # spec.d_input / spec.seq_len(40, 40) / spe
 
 > 建议顺序：**2 → 3 → 4（簇 1 实验并行跑）→ 5 → 6**。
 > 其中 2、3 是纯新增文件，不改变现有行为，可以立刻做；4 之后你的训练才是可复现的。
+
+### 9.4 一个必须先确认的环境事实（数据根目录）
+
+刚才复核时发现两份 `NetMamba` 并不等价：
+
+| 根目录 | 内容 |
+| --- | --- |
+| `/home/fsadness/datasets/NetMamba` | 有 `dataset_sampled/{train,valid,test}`（当前可直接训练） |
+| `/mnt/e/datasets/NetMamba` | 只有 `images_sampled_new`（未划分），**没有 `dataset_sampled`** |
+
+影响：
+
+- 6 月的 run（`config.yaml` 里写 `data_dir: /mnt/e/datasets/NetMamba`）**无法直接 resume/evaluate**，
+  因为那份数据现在缺 `dataset_sampled`；
+- 旧 `metrics.json` 的类别分布（如 Audio=222）与当前数据（Audio=252）不同，说明这期间数据被重新划分过，
+  **跨版本的精度数字不可直接比较**。
+
+建议：所有新实验统一 `--data_dir /home/fsadness/datasets/NetMamba`，并在 `configs/base.yaml`（Phase 2 引入）
+里固定下来，不要依赖 CLI 默认值。
