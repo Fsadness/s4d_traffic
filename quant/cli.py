@@ -113,4 +113,9 @@ def build_config(args, default_preset="paper", default_param_mode="continuous"):
         cfg = paper_config(param_mode=default_param_mode)
         label = "paper-W4A6-A8x8"
 
-    return label, apply_overrides(cfg, args)
+    cfg = apply_overrides(cfg, args)
+
+    if cfg.segment_bits and not label.endswith("+seg"):
+        label += "+seg"
+
+    return label, cfg
