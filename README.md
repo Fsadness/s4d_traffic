@@ -101,6 +101,8 @@ python train_log_patch.py -c finetune.yaml \
 `-c finetune.yaml` 读取配置，命令行参数优先级更高（见 [配置优先级](#配置优先级)）。产物写入
 `<save_dir>/<model>/<YYYYmmdd_HHMMSS>/`。
 
+加 `--max_samples N` 可只取每个 split 的前 N 个样本，用于几秒钟跑完的冒烟测试（例如 `--max_samples 96 --epochs 1`）。
+
 ### 2. 断点续训
 
 ```bash
@@ -120,6 +122,8 @@ python test.py <save_dir>/<model>/<timestamp>
 ```bash
 python test.py <save_dir>/<model>/<timestamp> --kernel recurrent
 ```
+
+同样支持 `--max_samples N`（只评估前 N 个测试样本）与 `--device cpu`。
 
 ### 4. 预训练（掩码重建）
 
@@ -288,25 +292,28 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 ├── finetune_no_earlystop.yaml  # 微调配置（关闭早停）
 ├── pretrain.yaml            # 预训练配置
 ├── datasets/
-│   ├── dataloader.py        # ImageFolder 封装 + SafeImageFolder + DataLoader 构建
+│   ├── specs.py             # InputSpec + tokenizer 注册表 + d_input/序列长度推导
+│   ├── dataloader.py        # SafeImageFolder + build_dataset/build_loaders
+│   ├── manifest.py          # 样本校验结果缓存（.cache/manifests）
 │   ├── transforms.py        # 灰度/归一化 + tokenizer 组装
-│   └── tokenizer.py         # 五种序列化方式
+│   └── tokenizer.py         # 五种序列化方式（含 d_input / seq_len 元数据）
 ├── models/
 │   ├── kernels/             # S4D 参数初始化、离散化、卷积核/循环核
 │   ├── layers/              # S4DLayer；s4.py / s4d.py 为上游参考实现
 │   ├── backbones/           # S4DBackbone / S4DRecurrentBackbone
 │   └── networks/            # 分类、重建、流式分类三个 Model
 ├── optim/optimizer.py       # AdamW + SSM 参数分组 + CosineAnnealing
-├── engine/trainer.py        # 面向对象的 Trainer 封装（结构相近，未被入口使用）
+├── engine/
+│   ├── trainer.py           # 面向对象的 Trainer 封装（结构相近，未被入口使用）
+│   └── metrics.py           # 指标、分类报告、混淆矩阵（评估入口共用）
 ├── src/                     # 上游 state-spaces/s4 代码快照（运行时只用 src.models.nn）
 ├── extensions/kernels/      # 上游可选 CUDA 扩展（当前 S4D 路径不需要）
-├── example.py               # 上游 demo：序列 CIFAR / MNIST
-├── example_pretrain.py      # 上游 demo 的掩码重建变体
-├── example_test.py          # 上游 demo 的评估变体
-├── train_full.py            # 上游 PyTorch-Lightning + Hydra 训练入口（本仓库未使用）
+├── archive/                 # 已归档的上游 demo / train_full / 旧 README
 ├── pyproject.toml / uv.lock / requirements.txt
 └── experiments/             # 训练产物（未纳入版本控制）
 ```
+
+> `.cache/manifests/` 存放数据集样本校验缓存（已被 `.gitignore` 忽略）：数据没变时直接复用，删除或修改文件会自动失效。
 
 > `engine/trainer.py` 是训练循环的另一种面向对象封装，结构与主脚本相近但未被任何入口调用，且预训练损失的计算方式与主脚本不同；实际使用请以 `train_log_patch.py` 为准。
 
