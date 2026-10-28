@@ -1,0 +1,38 @@
+# 按序列位置的分段位宽：前 800 个 token 用 8-bit，其余用 4-bit。
+#
+# 只影响“运行时量”（状态 x 与激活），按参数分组的位宽仍沿用下面的
+# bits_a / bits_b / ... ；分段未覆盖的位置使用 bits_state / bits_act 默认值。
+#
+# 用法：
+#   PTQ: python scripts/quant/ptq_eval.py --ckpt-dir <exp> \
+#            --quant-config configs/quant/segment_8_4.yaml
+#   QAT: python scripts/quant/qat_train.py --ckpt-dir <exp> \
+#            --quant-config configs/quant/segment_8_4.yaml --tag seg84
+bits_a: 8
+bits_b: 4
+bits_c: 4
+bits_d: 4
+bits_state: 8          # 默认（未被分段覆盖时）
+bits_act: 6
+bits_other: 4
+
+symmetric: false
+per_head: true
+calibration: static
+
+quantize_state: true
+quantize_activations: true
+quantize_weights: true
+use_qgelu: true
+
+segment_bits:
+  - start: 0
+    end: 800
+    bits_state: 8
+    bits_act: 8
+  - start: 800
+    end: null
+    bits_state: 4
+    bits_act: 4
+
+tag: seg-8-4

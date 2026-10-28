@@ -1,0 +1,24 @@
+# 论文 Table III 的异构方案：W4A6，Ā 与状态 x 用 8-bit
+# 用法：--quant-config configs/quant/paper_w4a6.yaml
+bits_a: 8
+bits_b: 4
+bits_c: 4
+bits_d: 4
+bits_state: 8
+bits_act: 6
+bits_other: 4
+
+symmetric: false
+per_head: true
+percentile: 99.999
+calibration: static
+
+state_clip: 50.0
+grad_clip: 1000.0
+
+quantize_state: true
+quantize_activations: true
+quantize_weights: true
+use_qgelu: true
+
+tag: paper-w4a6

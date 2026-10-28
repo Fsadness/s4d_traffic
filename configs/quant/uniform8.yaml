@@ -1,0 +1,20 @@
+# 统一 8-bit（所有权重 / 状态 / 激活）
+# 用法：--quant-config configs/quant/uniform8.yaml
+bits_a: 8
+bits_b: 8
+bits_c: 8
+bits_d: 8
+bits_state: 8
+bits_act: 8
+bits_other: 8
+
+symmetric: false
+per_head: true
+calibration: static
+
+quantize_state: true
+quantize_activations: true
+quantize_weights: true
+use_qgelu: true
+
+tag: uniform8
