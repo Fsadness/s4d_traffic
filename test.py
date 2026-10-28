@@ -129,10 +129,10 @@ d_input = infer_d_input(cfg)
 # 构建模型
 ###############################################################################
 
-# stream 模式固定使用流式分类模型（权重与 conv 训练结果键名一致，可直接迁移）；
+# stream 模式固定使用合并后的分类网络（streaming=True，循环核）；
 # full 模式沿用 config 里的模型，核由 --kernel 决定。
 if args.mode == "stream":
-    model_name = "s4d_recurrent_classification"
+    model_name = "s4d_classification"
     kernel_type = "recurrent"
 else:
     model_name = cfg.model
@@ -157,7 +157,7 @@ policy = None
 if args.mode == "stream":
     # 当前阶段策略为空实现：始终返回 False，即"不早退"
     policy = build_exit_policy("none")
-    model_kwargs.update(early_stop_strategy=policy, debug=True)
+    model_kwargs.update(streaming=True, early_stop_strategy=policy, debug=True)
 
 model = ModelClass(**model_kwargs)
 print(f"    d_input: {d_input} | d_output: {num_classes}")

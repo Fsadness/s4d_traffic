@@ -4,7 +4,7 @@
 因此接上它之后模型行为与"完整递推"完全一致。后续做置信度阈值、margin、
 patience 等策略时，只需新增一个子类，模型与评估入口都不需要改动。
 
-接口约定（与 `models/networks/s4d_recurrent_classification.py` 对齐）：
+接口约定（与 `models/networks/s4d_classification.py` 的 `streaming=True` 分支对齐）：
 
 - `reset(batch_size, total_steps, device)`：每段序列开始前重置内部状态；
 - `should_stop(logits, step, total_steps)`：返回 `(B,)` 的 bool 掩码与可选 info；

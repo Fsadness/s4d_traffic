@@ -37,7 +37,7 @@ class ExitPolicyTest(unittest.TestCase):
         self.assertIsNone(info)
 
     def test_streaming_model_runs_full_length(self):
-        from models.networks.s4d_recurrent_classification import Model
+        from models.networks.s4d_classification import Model
 
         length = 24
         model = Model(
@@ -47,6 +47,7 @@ class ExitPolicyTest(unittest.TestCase):
             n_layers=1,
             dropout=0.0,
             kernel_type="recurrent",
+            streaming=True,
             early_stop_strategy=build_exit_policy("none"),
             debug=True,
         ).eval()
@@ -61,6 +62,20 @@ class ExitPolicyTest(unittest.TestCase):
         # 未早退：所有样本都在最后一步才"停止"
         self.assertTrue(bool((info["stop_step"] == length - 1).all()))
         self.assertEqual(model.get_statistics()["avg_stop_step"], float(length - 1))
+
+    def test_legacy_recurrent_model_name_is_alias(self):
+        """`s4d_recurrent_classification` 现在只是 streaming 版本的别名。"""
+        from models.networks.s4d_classification import Model
+        from models.networks.s4d_recurrent_classification import Model as LegacyModel
+
+        cfg = dict(d_input=1, d_output=6, d_model=32, n_layers=1, dropout=0.0)
+
+        merged = Model(**cfg, kernel_type="recurrent", streaming=True)
+        legacy = LegacyModel(**cfg)
+
+        self.assertTrue(legacy.streaming)
+        self.assertEqual(legacy.backbone.kernel_type, "recurrent")
+        self.assertEqual(set(merged.state_dict()), set(legacy.state_dict()))
 
     def test_unknown_policy_raises(self):
         with self.assertRaises(ValueError):
