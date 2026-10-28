@@ -4,7 +4,7 @@
 - 约束：checkpoint 键名与数据目录约定**不能变**（已有 23 个 run 的 `best.pth` 要能直接加载）
 - 结论：主线代码其实只有 ~2.5k 行，仓库里却有 **~36k 行不参与运行**；真正需要合并的是 **3 个训练脚本、2 个评估脚本、3 个网络类、2 个 backbone，以及量化仓里重复的 data/metrics**
 
-**进度**：Phase 0 ✅（`a684de5`）｜Phase 1 ✅（`124419c`、`ecd6419`）｜步骤 1–2（护栏测试 + checkpoint 封装）✅（`9117660`）｜Phase 2 ✅（`b180085`）｜Phase 3–4 待做，详见[第九节](#九phase-01-执行记录与下一步)
+**进度**：Phase 0 ✅（`a684de5`）｜Phase 1 ✅（`124419c`、`ecd6419`）｜步骤 1–2 ✅（`9117660`）｜Phase 2 ✅（`b180085`）｜Phase 3 前半 ✅（`9fb2c89`）｜Phase 3 后半 / Phase 4 待做，详见[第九节](#九执行记录与下一步)
 
 ---
 
@@ -130,14 +130,14 @@ s4d/
 
 ### 3.2 评估：2 → 1
 
-`engine/evaluator.py` 支持 `--mode {conv, stream}`：
+`test.py` 支持 `--mode {full, stream}`：
 
-- `conv`：全序列前向（现在的 `test.py`）
-- `stream`：`forward_step` 逐步 + 早退策略（现在的 `test_inference.py`）
+- `full`：全序列前向（`--kernel conv|recurrent`）
+- `stream`：`forward_step` 逐步 + 早退策略（原 `test_inference.py` 的功能）
 
 两者共用 `engine/metrics.py`（指标、混淆矩阵、延迟/吞吐、置信度/margin），
-流式模式额外输出 `steps_hist`、`avg_stop_step`、`early_exit_ratio`、`acc@avg_steps`。
-`test_inference.py` 删除，`test.py` 变 shim。
+流式模式额外输出 `avg_steps`、`early_exit_ratio`、`total_steps`、`policy`。
+原 `test_inference.py` 已删除，`test.py` 保持为唯一评估入口。
 
 ### 3.3 模型：3 networks + 2 backbones → 2 + 1
 
@@ -229,7 +229,7 @@ class RunSpec:
 | --- | --- | --- |
 | 归档 | `example.py`、`example_pretrain.py`、`example_test.py`、`train_full.py`、`README_old.md`、`main.py` → `archive/` | ✅ 已完成（`a684de5`） |
 | 保留原位 | `src/`（31k 行）、`extensions/`、`models/layers/s4.py`、`models/layers/s4d.py` | 按"其他文件夹保留原组织"的约定，**不迁移**；`DropoutNd` 暂不内联 |
-| 暂缓 | `engine/trainer.py`（未接入）、`test_inference.py`、`train_log.py` | 保留到 Phase 2/3 统一收敛时再处理 |
+| 已收敛 | `engine/trainer.py`、`test_inference.py`、`train_log.py` | ✅ 全部处理完：trainer 成为唯一实现、stream 评估并入 `test.py`、`train_log.py` 变薄壳 |
 
 > 因此启动时仍会出现 `CUDA extension for structured kernels ... not found` 与 KeOps 提示：
 > 它们来自仍未迁移的 `models/layers/s4.py`，不影响 S4D 主路径。
@@ -384,7 +384,7 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 因此也没有内联 `DropoutNd`、没有摘除未使用的 `S4Block/S4D` import（它们仍可正常 import），
 启动时那条 pykeops/CUDA 警告依旧存在，属于已知且可接受的状态。
 
-验收：14 个主线模块 import 通过；仓库根目录只剩 6 个脚本（train/test/train_log/train_log_patch/test_inference）。
+验收：14 个主线模块 import 通过；仓库根目录只剩 5 个脚本（train/test/train_log/train_log_patch，外加 scripts/train.py）。
 
 ### Phase 1 ✅：数据与指标共用（已完成，提交 `124419c`、`ecd6419`）
 
@@ -412,7 +412,7 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 | 评估（`--max_samples 64`） | 通过（顺带修了"子集缺类"时混淆矩阵/CSV 维度错位的问题） |
 | 评估（`--kernel recurrent`，16 样本） | 通过，产物写入 `evaluation_recurrent/` |
 
-未做（按约定）：不合并 `quant/`；不迁移 `src/`、`extensions/`、`models/layers/*`；不动 `test_inference.py`、`train_log.py`。
+未做（按约定）：不合并 `quant/`；不迁移 `src/`、`extensions/`、`models/layers/*`；`train_log.py` 与 `test_inference.py` 当时保持原样（后续分别在 Phase 2 / Phase 3 前半收敛）。
 
 ### Phase 2 ✅：训练收敛（已完成，提交 `b180085`）
 
@@ -434,10 +434,30 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 | `--resume` | 正常恢复（Epoch 0 → 从 epoch 1 继续，不再重复训练） |
 | `meta.json` | 写入 seed / git commit / argv / datasets / 设备信息 |
 
-### Phase 3：模型收敛（2–3 天，待做）
+### Phase 3 前半 ✅：评估统一 + 早退接口（已完成，提交 `9fb2c89`）
 
-- backbone 合并 `forward_step`；classification 合并流式/早退；删 `test_inference.py`
-- 验收：`test_checkpoint_compat`（旧 best.pth 严格加载）+ `test_kernel_parity`（1e-7）
+| 改动 | 内容 |
+| --- | --- |
+| `policies/base.py` | `ExitPolicy` 占位实现：`should_stop` 恒定返回全 False（**不早退**）+ 策略注册表 |
+| `test.py` | 新增 `--mode full\|stream`；stream 使用 `s4d_recurrent_classification`，产物写 `evaluation_stream/`，`metrics.json` 增加 `streaming` 段 |
+| `test.py` | 置信度 margin 改为推理时顺带计算，取消第二次数据集遍历 |
+| `test_inference.py` | 删除（功能已被 `--mode stream` 吸收） |
+| `tests/test_exit_policy.py` | 默认策略永不停止；流式模型跑满 L 步 |
+
+验收：
+
+| 检查 | 结果 |
+| --- | --- |
+| full 模式回归（1951 样本，CPU） | 98.360% / macro-F1 98.047% / margin 0.9856，与改造前一致 |
+| stream 模式（同 8 样本子集） | 准确率与 full 一致；`avg_steps=1600/1600`、`early_exit_ratio=0` |
+| 全部护栏测试 | 7 个用例全部通过（kernel / checkpoint / exit policy） |
+
+### Phase 3 后半：模型收敛（待做）
+
+- backbone 合并 `forward_step`（现在 `S4DRecurrentBackbone` 与 `S4DBackbone` 有重复）
+- 分类网络合并流式/早退逻辑（把 `s4d_recurrent_classification` 的状态机并回 `s4d_classification`）
+- `ConfidenceExit`（tau / margin / min_steps / patience / stride）+ `scripts/tune_exit.py`
+- 验收：`test_checkpoint_compat` + `test_kernel_parity` + `test_exit_policy` 继续通过
 
 ### Phase 4：量化合并 + 四轴接线（2–3 天）
 
@@ -449,17 +469,17 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 
 ## 六、预期收益
 
-| 指标 | Phase 1 前 | 现在（Phase 2 后） | 目标（Phase 4 后） |
+| 指标 | Phase 1 前 | 现在（Phase 3 前半后） | 目标（Phase 4 后） |
 | --- | ---: | ---: | ---: |
 | 训练实现 | 3 脚本 + 1 未接入 Trainer | **1 Trainer + 3 个 10 行 shim** | 同左 |
-| 评估实现 | 2 脚本 | 2 脚本（`test.py` 已瘦身） | 1 Evaluator + 1 shim |
+| 评估实现 | 2 脚本 | **1 脚本**（`test.py`，full / stream 两种模式） | 同左 |
 | `d_input` 推导 | 3 份 | **1 份**（`InputSpec`） | 1 份 |
 | 数据集构建 | 3 份 | **2 份**（主仓 1 份；quant 待合并） | 1 份 |
 | 指标/画图 | 3 份 | **2 份**（主仓 1 份；quant 待合并） | 1 份 |
-| 参与运行的行数 | ~2.5k | ~2.3k（训练 -1.5k，新增 engine/scripts） | ~2.2k |
+| 参与运行的行数 | ~2.5k | ~2.3k（训练 -1.5k，新增 engine/scripts/policies） | ~2.2k |
 | 不参与运行的行数 | ~36k | ~34.5k（根目录 1.5k 已归档） | 0 |
 | 新增输入方案 | 改 3 处 + 1 个 tokenizer | **改 1 处 + 1 个 yaml** | 同左 |
-| 新增早退策略 | 改模型类 | 改模型类 | 加 1 个 policy + 1 个 yaml |
+| 新增早退策略 | 改模型类 | **加 1 个 policy 类**（模型已接好接口） | 同左 |
 
 ---
 
@@ -495,6 +515,8 @@ git mv example.py example_pretrain.py example_test.py train_full.py README_old.m
 | `3bc2fdc` | 记录 `/home` 与 `/mnt/e` 数据根目录不一致 | 1 文件，+19 |
 | `9117660` | 护栏：`engine/checkpoint.py` + 两个测试 | 4 文件，+375 |
 | `b180085` | Phase 2：训练循环收敛到 `scripts/train.py` + `engine/trainer.py` | 5 文件，+559 / −1791 |
+| `afad835` | 修复 `scripts/train.py` 直接运行时的 sys.path | 1 文件，+5 |
+| `9fb2c89` | Phase 3 前半：`test.py --mode stream` + `policies/` 占位（删 `test_inference.py`） | 5 文件，+231 / −515 |
 
 基线：`4bce5b2`（Phase 0 之前），需要整体回滚时用 `git reset --hard 4bce5b2`。
 
@@ -521,19 +543,21 @@ spec = make_input_spec(cfg)          # spec.d_input / spec.seq_len(40, 40) / spe
 2. ✅ `engine/checkpoint.py`：统一 load → eval → `prepare_for_inference` 的顺序；
 3. ✅ Phase 2：训练收敛到 `scripts/train.py` + `engine/trainer.py`，补 `--seed` / `--deterministic` /
    `--kernel_type`，每 run 写 `meta.json`。
+4. ✅ Phase 3 前半：`test.py --mode stream` 吸收 `test_inference.py`；`policies.ExitPolicy`
+   占位（恒不早退），`streaming` 指标已写入 `metrics.json`。
 
 **待做（建议顺序）**
 
-4. **Phase 3 前半（评估统一 + 早退）**：
-   - `test.py` 增加 `--mode stream`，吸收 `test_inference.py`；
-   - 新建 `policies/`（`ExitPolicy` 协议 + `ConfidenceExit`：tau / margin / min_steps / patience / stride）；
+5. **Phase 3 后半（模型收敛 + 真正的早退策略）**：
+   - backbone 合并 `forward_step`、分类网络合并流式分支（当前两份实现）；
+   - `policies/confidence.py`：tau / margin / min_steps / patience / stride；
    - `scripts/tune_exit.py`：在 valid 上扫阈值，输出 `acc vs avg_steps` 曲线。
-   这是你第 2 / 2+ 步的入口。
+   这是你第 2+ 步的核心。
 
-5. **Phase 4（量化合并）**：按 `MERGE_GUIDE.md` 并入 `quant/`，只改 data/metrics/config 三处调用；
+6. **Phase 4（量化合并）**：按 `MERGE_GUIDE.md` 并入 `quant/`，只改 data/metrics/config 三处调用；
    合并前不需要动主仓任何前向代码。
 
-6. **簇 1 实验可以立即开始**：输入方案只需在 `datasets/tokenizer.py` 加一个类、
+7. **簇 1 实验可以立即开始**：输入方案只需在 `datasets/tokenizer.py` 加一个类、
    在 `datasets/specs.py` 注册、再写一个 yaml。建议固定 3 个 seed（`--seed 0/1/2`），
    报告 `mean ± std`，并统一 `--data_dir /home/fsadness/datasets/NetMamba`。
 

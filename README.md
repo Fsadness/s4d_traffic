@@ -124,6 +124,22 @@ python test.py <save_dir>/<model>/<timestamp>
 python test.py <save_dir>/<model>/<timestamp> --kernel recurrent
 ```
 
+逐步递推（流式）评估，写入 `evaluation_stream/`：
+
+```bash
+python test.py <save_dir>/<model>/<timestamp> --mode stream
+```
+
+`--mode stream` 使用 `s4d_recurrent_classification` 逐时间步推理，可接入早退策略
+（当前 `policies.ExitPolicy` 是占位实现：**永不早退**，因此结果与完整递推一致）。
+除常规指标外，`metrics.json` 会多一个 `streaming` 段：
+
+```json
+"streaming": {"policy": "none", "total_steps": 1600, "avg_steps": 1600.0, "early_exit_ratio": 0.0}
+```
+
+注意流式推理是 Python 逐时间步循环，延迟远高于整段 FFT 卷积，CPU 上尤其明显。
+
 同样支持 `--max_samples N`（随机抽样至多 N 个测试样本，固定 seed）与 `--device cpu`。
 
 ### 4. 预训练（掩码重建）
@@ -318,6 +334,8 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 │   ├── backbones/           # S4DBackbone / S4DRecurrentBackbone
 │   └── networks/            # 分类、重建、流式分类三个 Model
 ├── optim/optimizer.py       # AdamW + SSM 参数分组 + CosineAnnealing
+├── policies/
+│   └── base.py              # ExitPolicy（当前为"永不早退"的占位实现）
 ├── engine/
 │   ├── trainer.py           # 唯一训练循环（train/eval/早停/保存）
 │   ├── checkpoint.py        # 加载/保存/恢复 + prepare_for_inference 顺序
@@ -342,6 +360,8 @@ python test.py <exp_dir> [--batch_size N] [--num_workers N] [--device cuda|cpu] 
 - **`img_size` 不参与缩放**：序列长度由图片实际尺寸与 tokenizer 决定，`--img_size` 目前仅为兼容保留。
 - **预训练数据缺位**：`pretrain.yaml` 指向 `pretrain_dataset`，需自行准备 `<data_dir>/pretrain_dataset/train/<class>/*.png`。
 - **循环核推理开销**：长序列（如 L=1600）逐步推理明显慢于 FFT 卷积核，仅适合流式/早退场景。
+- **早退策略仍是占位**：`policies.ExitPolicy` 恒定返回"不停止"，`--mode stream` 目前等同于完整递推；
+  阈值 / margin / patience 等参数化策略尚未实现（接口与评估链路已就绪）。
 - **`SafeImageFolder` 启动校验**：首次会做一次 `PIL.Image.verify()`，之后走 `.cache/manifests/` 缓存；数据变动会自动失效。
 
 ---
