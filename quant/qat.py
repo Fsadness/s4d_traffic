@@ -61,6 +61,12 @@ def train_qat(
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.Adam(params, lr=lr, weight_decay=0.0)
 
+    # 递推 QAT 每个 batch 都很慢，给一个进度条（含 ETA）便于观察
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:  # pragma: no cover
+        tqdm = None
+
     history = []
 
     for epoch in range(epochs):
@@ -69,7 +75,16 @@ def train_qat(
         loss_sum = 0.0
         n_batches = 0
 
-        for inputs, targets in train_loader:
+        iterator = train_loader
+        if tqdm is not None:
+            iterator = tqdm(
+                train_loader,
+                desc=f"QAT epoch {epoch + 1}/{epochs}",
+                leave=False,
+                total=(max_batches_per_epoch or len(train_loader)),
+            )
+
+        for inputs, targets in iterator:
             inputs = inputs.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
 
@@ -85,6 +100,12 @@ def train_qat(
             correct += (logits.argmax(1) == targets).sum().item()
             total += targets.numel()
             n_batches += 1
+
+            if tqdm is not None:
+                iterator.set_postfix(
+                    loss=f"{loss_sum / total:.4f}",
+                    acc=f"{100.0 * correct / total:.2f}%",
+                )
 
             if max_batches_per_epoch is not None and n_batches >= max_batches_per_epoch:
                 break

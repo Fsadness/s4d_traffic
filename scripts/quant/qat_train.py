@@ -41,6 +41,7 @@ from quant.data import (                                          # noqa: E402
     infer_sequence_length,
     load_experiment_config,
     make_loader,
+    make_stratified_loader,
 )
 from quant.evaluate import evaluate                               # noqa: E402
 from quant.memory import estimate_memory, format_memory           # noqa: E402
@@ -70,15 +71,21 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--grad-clip", type=float, default=1000.0)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--eval-batch-size", type=int, default=None,
+                        help="评估用 batch（默认与 --batch-size 相同；评估无反向，可放大加速）")
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--max-train-batches", type=int, default=None,
                         help="每个 epoch 最多训练多少个 batch（冒烟用）")
     parser.add_argument("--max-eval-samples", type=int, default=256,
                         help="评估子集大小（0 表示全量）")
+    parser.add_argument("--eval-every-epoch", action="store_true",
+                        help="每个 epoch 结束后在全量测试集上评估一次（记录恢复曲线）")
     parser.add_argument("--calib-batches", type=int, default=4)
     parser.add_argument("--train-split", type=str, default="train",
                         choices=["train", "valid"],
                         help="冒烟测试时可用 valid 避免扫描整个训练集")
+    parser.add_argument("--train-fraction", type=float, default=None,
+                        help="按类别分层抽样训练集的比例（如 0.05 / 0.1）；None 表示全量")
 
     parser.add_argument("--seed", type=int, default=0)
 
@@ -113,21 +120,41 @@ def main():
     print(f"==> 输出: {out_dir}")
 
     # ---- 数据 ----
+    eval_batch_size = args.eval_batch_size or args.batch_size
+
     eval_loader = make_loader(
         train_cfg, split="test", data_dir=args.data_dir,
-        batch_size=args.batch_size, num_workers=args.num_workers,
+        batch_size=eval_batch_size, num_workers=args.num_workers,
         max_samples=(args.max_eval_samples or None), seed=args.seed,
     )
     calib_loader = make_loader(
         train_cfg, split="valid", data_dir=args.data_dir,
-        batch_size=args.batch_size, num_workers=args.num_workers,
-        max_samples=args.calib_batches * args.batch_size, seed=args.seed + 1,
+        batch_size=eval_batch_size, num_workers=args.num_workers,
+        max_samples=args.calib_batches * eval_batch_size, seed=args.seed + 1,
     )
-    train_loader = make_loader(
-        train_cfg, split=args.train_split, data_dir=args.data_dir,
+    # 训练中监控用 valid（避免用测试集做逐 epoch 观测）；最终指标仍在 test 上算
+    monitor_loader = None
+    if args.eval_every_epoch:
+        monitor_loader = make_loader(
+            train_cfg, split="valid", data_dir=args.data_dir,
+            batch_size=eval_batch_size, num_workers=args.num_workers,
+            max_samples=(args.max_eval_samples or None), seed=args.seed,
+        )
+    train_loader_kwargs = dict(
+        cfg=train_cfg, split=args.train_split, data_dir=args.data_dir,
         batch_size=args.batch_size, num_workers=args.num_workers,
-        shuffle=True, seed=args.seed,
+        seed=args.seed,
     )
+
+    if args.train_fraction:
+        train_loader, subset_stats = make_stratified_loader(
+            fraction=args.train_fraction, **train_loader_kwargs
+        )
+        print(f"==> 训练子集: fraction={args.train_fraction:.3f} | "
+              f"n={subset_stats['total']} | per_class={subset_stats['per_class']}")
+    else:
+        train_loader = make_loader(shuffle=True, **train_loader_kwargs)
+        subset_stats = {"fraction": 1.0, "total": None, "per_class": None}
 
     # ---- 构建 + 校准（PTQ 起点）----
     model = build_quant_model(fp_state_dict, qcfg=qcfg).to(device)
@@ -146,7 +173,8 @@ def main():
         lr=args.lr,
         grad_clip=args.grad_clip,
         max_batches_per_epoch=args.max_train_batches,
-        val_loader=None,          # 训练中不评估，结束后统一评估（省时间）
+        val_loader=monitor_loader,
+        max_val_batches=None,
     )
     elapsed = time.time() - t0
 
@@ -181,6 +209,7 @@ def main():
         "history": history,
         "memory": mem,
         "elapsed_s": elapsed,
+        "train_subset": subset_stats,
         "args": vars(args),
     }
     with open(os.path.join(out_dir, "qat_report.json"), "w", encoding="utf-8") as f:
