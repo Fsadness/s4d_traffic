@@ -92,6 +92,20 @@ python scripts/quant/qat_train.py --ckpt-dir <exp> \
 产物：`<exp>/quant_qat_<tag>/quant_best.pth` 与 `qat_report.json`
 （含 `quant_config`、PTQ/QAT 精度、显存估算、训练历史）。
 
+小比例数据微调（按类别分层抽样，每类至少 1 个）：
+
+```bash
+python scripts/quant/qat_train.py --ckpt-dir <exp> \
+    --quant-config configs/quant/paper_w4a6.yaml --param-mode discrete \
+    --train-fraction 0.05 --epochs 10 --batch-size 32 --eval-batch-size 128 \
+    --num-workers 0 --max-eval-samples 0 --eval-every-epoch \
+    --tag frac5
+```
+
+`--eval-every-epoch` 会在每个 epoch 后用 valid 集评估并写入 `history`；
+最终指标仍在全量 test 集上计算。参考结果见
+[docs/qat_data_fraction.md](qat_data_fraction.md)。
+
 ### 2.4 组件消融
 
 ```bash
